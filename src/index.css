@@ -1,0 +1,87 @@
+@import "tailwindcss";
+
+/* Real-time Smooth transition settings for fluid lighting changes */
+html, body, aside, div, p, span, h1, h2, h3, h4, h5, h6, input, button, textarea {
+  transition: background-color 0.2s ease, border-color 0.2s ease, text-color 0.2s ease;
+}
+
+/* Custom CSS overrides for dark mode to instantly and flawlessly theme the entire app beautifully */
+html.dark body {
+  background-color: #0b0f19;
+  color: #f8fafc;
+}
+
+html.dark {
+  background-color: #0b0f19;
+}
+
+html.dark .bg-slate-50 {
+  background-color: #0f172a !important;
+}
+
+html.dark .bg-white {
+  background-color: #151d30 !important;
+}
+
+html.dark .text-slate-900 {
+  color: #f1f5f9 !important;
+}
+
+html.dark .text-slate-600 {
+  color: #94a3b8 !important;
+}
+
+html.dark .text-slate-700 {
+  color: #cbd5e1 !important;
+}
+
+html.dark .text-slate-800 {
+  color: #e2e8f0 !important;
+}
+
+html.dark .text-slate-500 {
+  color: #64748b !important;
+}
+
+html.dark .text-slate-400 {
+  color: #475569 !important;
+}
+
+html.dark .border-slate-200 {
+  border-color: #1e293b !important;
+}
+
+html.dark .border-slate-100 {
+  border-color: #1e293b !important;
+}
+
+html.dark .border-slate-50 {
+  border-color: #0f172a !important;
+}
+
+html.dark aside, html.dark header, html.dark nav {
+  background-color: #101726 !important;
+  border-color: #1e293b !important;
+}
+
+html.dark input, html.dark textarea, html.dark select {
+  background-color: #0f172a !important;
+  color: #f8fafc !important;
+  border-color: #334155 !important;
+}
+
+html.dark .shadow-sm {
+  box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.5) !important;
+}
+
+html.dark .bg-blue-50 {
+  background-color: #032d56 !important;
+}
+
+html.dark .hover\:bg-slate-50:hover {
+  background-color: #1e293b !important;
+}
+
+html.dark .bg-slate-50\/20 {
+  background-color: rgba(15, 23, 42, 0.2) !important;
+}

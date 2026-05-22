@@ -1,0 +1,6 @@
+{
+  "name": "Student-Nomad",
+  "description": "A student-centric social platform for university students to share, connect, and collaborate.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

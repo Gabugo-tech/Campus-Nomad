@@ -1,0 +1,236 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Registered student user information",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "campus": { "type": "string" },
+        "course": { "type": "string" },
+        "year": { "type": "string" },
+        "avatarUrl": { "type": "string" },
+        "bio": { "type": "string" },
+        "verified": { "type": "boolean" },
+        "verificationStatus": { "type": "string", "enum": ["pending", "verified", "rejected"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email"]
+    },
+    "Post": {
+      "title": "Post",
+      "description": "Feed post created by a user",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "content": { "type": "string" },
+        "mediaType": { "type": "string", "enum": ["text", "image", "video", "poll"] },
+        "mediaUrl": { "type": "string" },
+        "campus": { "type": "string" },
+        "likesCount": { "type": "number" },
+        "commentsCount": { "type": "number" },
+        "pollOptions": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "content", "campus"]
+    },
+    "Comment": {
+      "title": "Comment",
+      "description": "User comment on a post",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "postId": { "type": "string" },
+        "userId": { "type": "string" },
+        "content": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "MarketplaceItem": {
+      "title": "MarketplaceItem",
+      "description": "Item listed for sale in the campus marketplace",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "price": { "type": "number" },
+        "category": { "type": "string" },
+        "images": { "type": "array" },
+        "campus": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "sold", "deleted"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "title", "price", "campus"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "Real-time chat message",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "senderId": { "type": "string" },
+        "receiverId": { "type": "string" },
+        "chatId": { "type": "string" },
+        "text": { "type": "string" },
+        "imageUrl": { "type": "string" },
+        "read": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "FriendRequest": {
+      "title": "FriendRequest",
+      "description": "Connection request between users",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "fromId": { "type": "string" },
+        "toId": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "accepted", "rejected"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "VerificationRequest": {
+      "title": "VerificationRequest",
+      "description": "Request for student verification with proof",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "email": { "type": "string" },
+        "idImageUrl": { "type": "string" },
+        "selfieImageUrl": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "Follow": {
+      "title": "Follow",
+      "description": "User follower & following relation",
+      "type": "object",
+      "properties": {
+        "followerId": { "type": "string" },
+        "followingId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "Friendship": {
+      "title": "Friendship",
+      "description": "Direct realtime student friends",
+      "type": "object",
+      "properties": {
+        "user1Id": { "type": "string" },
+        "user1Name": { "type": "string" },
+        "user2Id": { "type": "string" },
+        "user2Name": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "ActivityLog": {
+      "title": "ActivityLog",
+      "description": "App traffic activities monitor log",
+      "type": "object",
+      "properties": {
+        "userEmail": { "type": "string" },
+        "displayName": { "type": "string" },
+        "action": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      }
+    },
+    "MissedCall": {
+      "title": "MissedCall",
+      "description": "Unanswered student call connection logs",
+      "type": "object",
+      "properties": {
+        "callerId": { "type": "string" },
+        "callerName": { "type": "string" },
+        "receiverId": { "type": "string" },
+        "callType": { "type": "string", "enum": ["voice", "video"] },
+        "status": { "type": "string", "enum": ["pending", "accepted", "missed"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "acknowledged": { "type": "boolean" }
+      },
+      "required": ["callerId", "receiverId", "callType", "status"]
+    },
+    "Block": {
+      "title": "Block",
+      "description": "User block relationship",
+      "type": "object",
+      "properties": {
+        "blockerId": { "type": "string" },
+        "blockedId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["blockerId", "blockedId"]
+    },
+    "FeedNotification": {
+      "title": "FeedNotification",
+      "description": "Notification triggered by an action in the campus feed",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "receiverId": { "type": "string" },
+        "senderId": { "type": "string" },
+        "senderName": { "type": "string" },
+        "senderAvatar": { "type": "string" },
+        "type": { "type": "string", "enum": ["like", "comment"] },
+        "postId": { "type": "string" },
+        "postContent": { "type": "string" },
+        "commentText": { "type": "string" },
+        "seen": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["receiverId", "senderId", "type", "postId", "seen"]
+    },
+    "Status": {
+      "title": "Status",
+      "description": "WhatsApp-style 24-hour student day status update",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "userName": { "type": "string" },
+        "userAvatar": { "type": "string" },
+        "content": { "type": "string" },
+        "mediaUrl": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "campus": { "type": "string" }
+      },
+      "required": ["userId", "userName", "campus"]
+    },
+    "Report": {
+      "title": "Report",
+      "description": "Student reports filed for admin review",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "reporterId": { "type": "string" },
+        "reporterName": { "type": "string" },
+        "reportedId": { "type": "string" },
+        "reportedName": { "type": "string" },
+        "reason": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["reporterId", "reportedId", "reason"]
+    }
+  },
+  "firestore": {
+    "users": { "schema": "User", "description": "Global user directory" },
+    "posts": { "schema": "Post", "description": "All campus posts" },
+    "posts/{postId}/comments": { "schema": "Comment", "description": "Comments for a specific post" },
+    "marketplace": { "schema": "MarketplaceItem", "description": "Marketplace listings" },
+    "chats/{chatId}/messages": { "schema": "Message", "description": "Direct messages" },
+    "friendRequests": { "schema": "FriendRequest", "description": "User connection signals" },
+    "verificationRequests": { "schema": "VerificationRequest", "description": "Admin verification queue" },
+    "follows": { "schema": "Follow", "description": "Student social graph followers" },
+    "friendships": { "schema": "Friendship", "description": "Student direct friends" },
+    "activityLogs": { "schema": "ActivityLog", "description": "Admin live stream tracking log logs" },
+    "missed_calls": { "schema": "MissedCall", "description": "Student real-time calling missed connection logs" },
+    "blocks": { "schema": "Block", "description": "Student safety blocks registry" },
+    "feed_notifications": { "schema": "FeedNotification", "description": "Notifications bubble triggered by likes or comments in the feed" },
+    "statuses": { "schema": "Status", "description": "WhatsApp-style ephemeral active student day status updates" },
+    "reports": { "schema": "Report", "description": "Student flag reports logged for administrator review" }
+  }
+}
