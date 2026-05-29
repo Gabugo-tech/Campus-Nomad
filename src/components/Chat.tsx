@@ -1248,7 +1248,7 @@ export default function Chat() {
       const msgs = snapshot.docs.map(doc => ({
         id: doc.id,
         ...doc.data(),
-        createdAt: doc.data().createdAt?.toDate() || new Date()
+        createdAt: doc.data().createdAt && typeof doc.data().createdAt.toDate === 'function' ? doc.data().createdAt.toDate() : new Date()
       }));
       setMessages(msgs);
 

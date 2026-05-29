@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Sparkles, CameraOff, Phone, PhoneOff, Mic, MicOff, Video, VideoOff, Maximize2, Minimize2, ScreenShare, Volume2, ShieldCheck, Loader2 } from 'lucide-react';
+import { Sparkles, CameraOff, Phone, PhoneOff, Mic, MicOff, Video, VideoOff, Maximize2, Minimize2, ScreenShare, Volume2, ShieldCheck, Loader2, Layers } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 export interface CallInterfaceProps {
@@ -46,21 +46,125 @@ function VideoFeed({
   name, 
   stream, 
   isLocal, 
-  filterStyle 
+  filterStyle,
+  blurLevel = 'none'
 }: { 
   id: string; 
   name: string; 
   stream: MediaStream; 
   isLocal: boolean; 
   filterStyle?: string; 
+  blurLevel?: 'none' | 'light' | 'medium' | 'deep';
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const tempCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const animationFrameRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (videoRef.current && stream) {
       videoRef.current.srcObject = stream;
     }
   }, [stream]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    
+    if (!video || !canvas || !stream || blurLevel === 'none' || !isLocal) {
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+        animationFrameRef.current = null;
+      }
+      return;
+    }
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    let isActive = true;
+
+    const render = () => {
+      if (!isActive) return;
+
+      if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) {
+        if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+        }
+
+        const width = canvas.width;
+        const height = canvas.height;
+
+        ctx.clearRect(0, 0, width, height);
+
+        // Draw basic frame
+        ctx.drawImage(video, 0, 0, width, height);
+
+        // Process blurred frame
+        const blurPx = blurLevel === 'light' ? 8 : blurLevel === 'medium' ? 16 : 28;
+
+        if (!tempCanvasRef.current) {
+          tempCanvasRef.current = document.createElement('canvas');
+        }
+        const tempCanvas = tempCanvasRef.current;
+        if (tempCanvas.width !== width || tempCanvas.height !== height) {
+          tempCanvas.width = width;
+          tempCanvas.height = height;
+        }
+
+        const tempCtx = tempCanvas.getContext('2d');
+        if (tempCtx) {
+          tempCtx.clearRect(0, 0, width, height);
+          
+          tempCtx.filter = `blur(${blurPx}px)`;
+          tempCtx.drawImage(video, 0, 0, width, height);
+          tempCtx.filter = 'none';
+
+          tempCtx.globalCompositeOperation = 'destination-out';
+          
+          const centerX = width / 2;
+          const centerY = height / 2;
+          
+          const focalWidth = Math.min(width, height) * 0.20;
+          const shadowWidth = Math.max(width, height) * 0.48;
+
+          const gradient = tempCtx.createRadialGradient(
+            centerX, centerY, focalWidth,
+            centerX, centerY, shadowWidth
+          );
+          
+          gradient.addColorStop(0, 'rgba(0, 0, 0, 1.0)');
+          gradient.addColorStop(0.35, 'rgba(0, 0, 0, 0.8)');
+          gradient.addColorStop(0.8, 'rgba(0, 0, 0, 0.2)');
+          gradient.addColorStop(1, 'rgba(0, 0, 0, 0.0)');
+
+          tempCtx.fillStyle = gradient;
+          tempCtx.beginPath();
+          tempCtx.arc(centerX, centerY, Math.max(width, height), 0, 2 * Math.PI);
+          tempCtx.fill();
+
+          tempCtx.globalCompositeOperation = 'source-over';
+
+          ctx.drawImage(tempCanvas, 0, 0);
+        }
+      }
+
+      animationFrameRef.current = requestAnimationFrame(render);
+    };
+
+    render();
+
+    return () => {
+      isActive = false;
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+        animationFrameRef.current = null;
+      }
+    };
+  }, [blurLevel, isLocal, stream]);
+
+  const showCanvas = isLocal && blurLevel !== 'none';
 
   return (
     <div 
@@ -72,9 +176,21 @@ function VideoFeed({
         autoPlay
         playsInline
         muted={isLocal}
-        className="w-full h-full object-cover rounded-2xl shadow-xl border border-slate-800/50"
-        style={{ filter: filterStyle || 'none' }}
+        className={cn(
+          "w-full h-full object-cover rounded-2xl shadow-xl border border-slate-800/50",
+          showCanvas ? "hidden" : "block"
+        )}
+        style={{ filter: (!showCanvas && filterStyle) ? filterStyle : 'none' }}
       />
+
+      {showCanvas && (
+        <canvas
+          ref={canvasRef}
+          className="w-full h-full object-cover rounded-2xl shadow-xl border border-slate-800/50"
+          style={{ filter: filterStyle || 'none' }}
+        />
+      )}
+
       <span className="absolute bottom-3 left-3 bg-slate-950/75 text-white text-[10px] font-mono font-black uppercase tracking-widest px-2 py-1 rounded-lg border border-slate-800/80 shadow-md">
         {name} {isLocal && " (You)"}
       </span>
@@ -107,6 +223,7 @@ export default function CallInterface({
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const [isMinimized, setIsMinimized] = useState(false);
   const [activeFilterIndex, setActiveFilterIndex] = useState(0);
+  const [blurLevel, setBlurLevel] = useState<'none' | 'light' | 'medium' | 'deep'>('none');
 
   const activeFilter = FILTERS[activeFilterIndex].value;
 
@@ -299,6 +416,7 @@ export default function CallInterface({
                             stream={feed.stream}
                             isLocal={feed.isLocal}
                             filterStyle={feed.isLocal ? activeFilter : 'none'}
+                            blurLevel={feed.isLocal ? blurLevel : 'none'}
                           />
                         ))}
                       </div>
@@ -378,12 +496,35 @@ export default function CallInterface({
                     <button
                       onClick={() => setActiveFilterIndex(prev => (prev + 1) % FILTERS.length)}
                       className={cn(
-                        "p-3 rounded-2xl border text-slate-300 transition-all hover:bg-slate-800 active:scale-90 bg-slate-800/60 border-slate-750",
+                        "p-3 rounded-2xl border text-slate-300 transition-all hover:bg-slate-800 active:scale-90 bg-slate-800/60 border-slate-755",
                         activeFilterIndex > 0 && "bg-amber-950/60 border-amber-800 text-amber-500 font-bold"
                       )}
                       title={`Video Effect: ${FILTERS[activeFilterIndex].name}`}
                     >
                       <Sparkles size={18} />
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        setBlurLevel(prev => {
+                          if (prev === 'none') return 'light';
+                          if (prev === 'light') return 'medium';
+                          if (prev === 'medium') return 'deep';
+                          return 'none';
+                        });
+                      }}
+                      className={cn(
+                        "p-3 rounded-2xl border text-slate-300 transition-all hover:bg-slate-800 active:scale-90 bg-slate-800/60 border-slate-755 flex items-center gap-1.5",
+                        blurLevel !== 'none' && "bg-blue-950/60 border-blue-800 text-blue-400 font-bold shadow-md"
+                      )}
+                      title={`Background Blur: ${blurLevel.toUpperCase()}`}
+                    >
+                      <Layers size={18} className={cn(blurLevel !== 'none' && "animate-pulse text-blue-400")} />
+                      {blurLevel !== 'none' && (
+                        <span className="text-[9px] font-mono tracking-wider uppercase font-black px-1 py-0.5 rounded bg-blue-500/10 text-blue-300">
+                          {blurLevel === 'light' ? 'Light' : blurLevel === 'medium' ? 'Med' : 'Deep'}
+                        </span>
+                      )}
                     </button>
 
                     <button

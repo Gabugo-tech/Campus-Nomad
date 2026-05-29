@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { db, auth } from '../lib/firebase';
+import { db, auth, handleFirestoreError, OperationType } from '../lib/firebase';
 import { collection, addDoc, serverTimestamp, doc, onSnapshot, updateDoc } from 'firebase/firestore';
 import { motion } from 'motion/react';
 import { ShieldCheck, Upload, Camera, CheckCircle2, AlertCircle, Loader2, X } from 'lucide-react';
@@ -71,20 +71,28 @@ export default function Verification() {
 
     setLoading(true);
     try {
-      await addDoc(collection(db, 'verificationRequests'), {
-        userId: auth.currentUser.uid,
-        email: email,
-        userName: auth.currentUser.displayName || auth.currentUser.email?.split('@')[0] || 'Student',
-        idImageUrl: idImgBase64 || "https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=400",
-        selfieImageUrl: selfieImgBase64 || auth.currentUser.photoURL || `https://api.dicebear.com/7.x/initials/svg?seed=${auth.currentUser.email}`,
-        status: 'pending',
-        createdAt: serverTimestamp()
-      });
+      try {
+        await addDoc(collection(db, 'verificationRequests'), {
+          userId: auth.currentUser.uid,
+          email: email,
+          userName: auth.currentUser.displayName || auth.currentUser.email?.split('@')[0] || 'Student',
+          idImageUrl: idImgBase64 || "https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=400",
+          selfieImageUrl: selfieImgBase64 || auth.currentUser.photoURL || `https://api.dicebear.com/7.x/initials/svg?seed=${auth.currentUser.email}`,
+          status: 'pending',
+          createdAt: serverTimestamp()
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.CREATE, 'verificationRequests');
+      }
       
       const userRef = doc(db, 'users', auth.currentUser.uid);
-      await updateDoc(userRef, {
-        verificationStatus: 'pending'
-      });
+      try {
+        await updateDoc(userRef, {
+          verificationStatus: 'pending'
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, `users/${auth.currentUser.uid}`);
+      }
 
       setStep(3);
     } catch (error) {
@@ -101,9 +109,15 @@ export default function Verification() {
           <Loader2 size={40} className="animate-spin" />
         </div>
         <h2 className="text-2xl font-bold mb-2">Verification in Progress</h2>
-        <p className="text-slate-500 max-w-sm">
+        <p className="text-slate-500 max-w-sm mb-6">
           We've received your request! Our campus admins are reviewing your documents. This usually takes less than 24 hours. Once verified, you will be automatically granted entry.
         </p>
+        <button
+          onClick={() => auth.signOut()}
+          className="px-6 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold uppercase tracking-wider rounded-2xl transition-all active:scale-95 border border-slate-200"
+        >
+          Sign Out
+        </button>
       </div>
     );
   }
@@ -155,6 +169,15 @@ export default function Verification() {
               >
                 Continue
               </button>
+              <div className="text-center mt-4">
+                <button
+                  type="button"
+                  onClick={() => auth.signOut()}
+                  className="text-xs font-semibold text-slate-500 hover:text-slate-800 transition-all underline decoration-dashed decoration-slate-350 underline-offset-4"
+                >
+                  Cancel & Sign Out
+                </button>
+              </div>
             </div>
           </motion.div>
         )}
@@ -240,9 +263,15 @@ export default function Verification() {
             </p>
             <button
               onClick={() => navigate('/')}
-              className="w-full py-4 bg-slate-900 text-white rounded-xl font-bold text-xs uppercase tracking-widest hover:bg-slate-800 transition-all"
+              className="w-full py-4 bg-slate-900 text-white rounded-xl font-bold text-xs uppercase tracking-widest hover:bg-slate-800 transition-all mb-3"
             >
               Back to Entrance
+            </button>
+            <button
+              onClick={() => auth.signOut()}
+              className="w-full py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold text-xs uppercase tracking-widest transition-all"
+            >
+              Sign Out
             </button>
           </motion.div>
         )}

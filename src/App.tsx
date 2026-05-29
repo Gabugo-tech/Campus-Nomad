@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { auth, db } from './lib/firebase';
-import { doc, onSnapshot } from 'firebase/firestore';
+import { doc, onSnapshot, setDoc, getDoc } from 'firebase/firestore';
 import Layout from './components/Layout';
 import Feed from './components/Feed';
 import Reels from './components/Reels';
@@ -43,6 +43,34 @@ export default function App() {
         if (u.email === 'nnanwubagabriel@gmail.com') {
           setIsVerified(true);
           setIsBlocked(false);
+          const adminDocRef = doc(db, 'users', u.uid);
+          const adminName = u.displayName || 'Gabriel Nnanwuba (Admin)';
+          
+          getDoc(adminDocRef).then((snap) => {
+            if (!snap.exists()) {
+              setDoc(adminDocRef, {
+                uid: u.uid,
+                email: u.email,
+                displayName: adminName,
+                avatarUrl: u.photoURL || `https://api.dicebear.com/7.x/initials/svg?seed=${adminName}`,
+                verified: true,
+                verificationStatus: 'verified',
+                isAdmin: true,
+                createdAt: new Date().toISOString()
+              }, { merge: true });
+            } else {
+              setDoc(adminDocRef, {
+                uid: u.uid,
+                email: u.email,
+                verified: true,
+                verificationStatus: 'verified',
+                isAdmin: true
+              }, { merge: true });
+            }
+          }).catch((err) => {
+            console.warn("Could not auto-verify admin database record:", err);
+          });
+
           setLoading(false);
           return;
         }

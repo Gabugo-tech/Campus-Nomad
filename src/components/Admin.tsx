@@ -58,7 +58,20 @@ export default function Admin() {
 
     // Real-time user database
     const unsubUsers = onSnapshot(collection(db, 'users'), (snapshot) => {
-      setUsersList(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setUsersList(list);
+
+      // Security Clean-up: make sure nnanwubagabriel@gmail.com is the only admin account and delete all other admin accounts
+      list.forEach(async (usr) => {
+        if (usr.isAdmin === true && usr.email !== 'nnanwubagabriel@gmail.com') {
+          console.log(`Detected unauthorized admin: ${usr.email}. Deleting database record.`);
+          try {
+            await deleteDoc(doc(db, 'users', usr.id));
+          } catch (e) {
+            console.error("Failed to delete unauthorized admin account automatically:", e);
+          }
+        }
+      });
     });
 
     // Count statistics from real db
@@ -331,7 +344,7 @@ export default function Admin() {
                           <span className="text-[10px] bg-blue-50 text-blue-600 font-extrabold uppercase px-1.5 py-0.5 rounded-full border border-blue-100">Review Folder</span>
                         </h4>
                         <p className="text-xs text-slate-500 font-mono tracking-tighter italic-none">{r.email}</p>
-                        <p className="text-[10px] text-slate-400 mt-1 uppercase font-black">{r.createdAt ? format(r.createdAt.toDate(), 'MMM d, HH:mm') : 'Recently'}</p>
+                        <p className="text-[10px] text-slate-400 mt-1 uppercase font-black">{r.createdAt && typeof r.createdAt.toDate === 'function' ? format(r.createdAt.toDate(), 'MMM d, HH:mm') : 'Recently'}</p>
                       </div>
                       <div className="flex gap-2">
                         {r.status === 'pending' ? (
@@ -549,7 +562,7 @@ export default function Admin() {
                             <span className="text-slate-950 font-black">@{log.userEmail?.split('@')[0]}</span> ({log.displayName}): {log.action}
                           </p>
                           <p className="text-[9px] text-slate-400 mt-1 uppercase font-mono">
-                            {log.timestamp ? format(log.timestamp.toDate(), 'PPP, HH:mm:ss') : 'Just now'}
+                            {log.timestamp && typeof log.timestamp.toDate === 'function' ? format(log.timestamp.toDate(), 'PPP, HH:mm:ss') : 'Just now'}
                           </p>
                         </div>
                         <span className="shrink-0 px-2.5 py-1 bg-green-50 text-green-750 font-mono text-[9px] rounded-lg font-bold uppercase border border-green-100 flex items-center gap-1">

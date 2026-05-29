@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { collection, query, orderBy, onSnapshot, addDoc, serverTimestamp, doc, updateDoc, increment, arrayUnion, arrayRemove, where, deleteDoc } from 'firebase/firestore';
 import { db, auth, handleFirestoreError, OperationType } from '../lib/firebase';
+import { logActivity } from '../lib/activity';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import { Image, Send, Heart, MessageCircle, Share2, MoreHorizontal, CheckCircle2, X } from 'lucide-react';
@@ -36,6 +37,11 @@ export default function Feed() {
   const [editingPostId, setEditingPostId] = useState<string | null>(null);
   const [editContentText, setEditContentText] = useState('');
   const [postVisibility, setPostVisibility] = useState<'public' | 'friends'>('public');
+
+  // Custom Delete Post confirmation modal state
+  const [postToDelete, setPostToDelete] = useState<any | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   // Direct Reply states
   const [expandedReplyPostId, setExpandedReplyPostId] = useState<string | null>(null);
@@ -175,13 +181,21 @@ export default function Feed() {
     if (auth.currentUser) {
       const q1 = query(collection(db, 'friendships'), where('user1Id', '==', auth.currentUser.uid));
       const q2 = query(collection(db, 'friendships'), where('user2Id', '==', auth.currentUser.uid));
+      
+      let friendsFromQ1: string[] = [];
+      let friendsFromQ2: string[] = [];
+      
+      const rebuildFriendsList = () => {
+        setFriendsList(Array.from(new Set([...friendsFromQ1, ...friendsFromQ2])));
+      };
+
       unsub1 = onSnapshot(q1, (snap1) => {
-        const ids = snap1.docs.map(d => d.data().user2Id);
-        setFriendsList(prev => Array.from(new Set([...prev, ...ids])));
+        friendsFromQ1 = snap1.docs.map(d => d.data().user2Id);
+        rebuildFriendsList();
       });
       unsub2 = onSnapshot(q2, (snap2) => {
-        const ids = snap2.docs.map(d => d.data().user1Id);
-        setFriendsList(prev => Array.from(new Set([...prev, ...ids])));
+        friendsFromQ2 = snap2.docs.map(d => d.data().user1Id);
+        rebuildFriendsList();
       });
     }
 
@@ -752,7 +766,7 @@ export default function Feed() {
                             </span>
                           </h4>
                           <p className="text-[9px] text-slate-400 uppercase tracking-widest font-black mt-0.5">
-                            {post.createdAt ? formatDistanceToNow(post.createdAt.toDate()) : 'just now'} ago
+                            {post.createdAt && typeof post.createdAt.toDate === 'function' ? formatDistanceToNow(post.createdAt.toDate()) : 'just now'} ago
                           </p>
                         </div>
                         <div className="relative">
@@ -802,19 +816,8 @@ export default function Feed() {
                                     </button>
                                     <div className="border-t border-slate-100 my-1"></div>
                                     <button 
-                                      onClick={async () => {
-                                        if (window.confirm("Are you positive you wish to permanently delete this post from the campus feed? This is irreversible.")) {
-                                          // Optimistic deletion to make the action instant and ultra-responsive in the UI
-                                          setPosts(prev => prev.filter(p => p.id !== post.id));
-                                          
-                                          try {
-                                            await deleteDoc(doc(db, 'posts', post.id));
-                                            await logActivity("Deleted a campus feed post permanently.");
-                                          } catch (err) {
-                                            console.error("Failed to delete post:", err);
-                                            alert("Could not complete safety deletion on backend.");
-                                          }
-                                        }
+                                      onClick={() => {
+                                        setPostToDelete(post);
                                         setActiveMenuPostId(null);
                                       }}
                                       className="w-full text-left px-4 py-2 hover:bg-red-50 text-red-600 font-bold transition-colors cursor-pointer"
@@ -1198,7 +1201,7 @@ export default function Feed() {
                     <div>
                       <h4 className="text-xs font-black text-white leading-tight">{activeStatusUserGroup.userName}</h4>
                       <p className="text-[9px] text-white/60">
-                        {currentStory.createdAt ? formatDistanceToNow(currentStory.createdAt.toDate()) + ' ago' : 'Recently'}
+                        {currentStory.createdAt && typeof currentStory.createdAt.toDate === 'function' ? formatDistanceToNow(currentStory.createdAt.toDate()) + ' ago' : 'Recently'}
                       </p>
                     </div>
                   </div>
@@ -1252,6 +1255,101 @@ export default function Feed() {
             </div>
           );
         })()}
+      </AnimatePresence>
+
+      {/* PERFECTLY RESPONSIVE ANIMATED CONFIRMATION DELETE MODAL */}
+      <AnimatePresence>
+        {postToDelete && (
+          <div className="fixed inset-0 z-[150] flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => {
+                if (!isDeleting) setPostToDelete(null);
+              }}
+              className="absolute inset-0 bg-slate-950/60 backdrop-blur-xs"
+            />
+            
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 15 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 15 }}
+              className="bg-white max-w-sm w-full rounded-3xl border border-slate-200 p-6 shadow-2xl relative z-10 text-slate-800"
+            >
+              <div className="flex flex-col items-center text-center space-y-4">
+                <div className="w-12 h-12 rounded-full bg-red-50 flex items-center justify-center text-red-500 animate-pulse border border-red-100">
+                  <X size={24} className="text-red-500 font-bold" />
+                </div>
+                
+                <div>
+                  <h3 className="font-extrabold text-slate-900 text-base">Permanently Delete Post?</h3>
+                  <p className="text-slate-500 text-xs mt-1.5 leading-relaxed">
+                    Are you positive you wish to remove this post from the campus feed? This is irreversible and will purge it for all classmates.
+                  </p>
+                </div>
+
+                {deleteError && (
+                  <div className="w-full text-left p-3 rounded-2xl bg-red-50 border border-red-100/60 text-xs font-semibold text-red-600 leading-normal">
+                    ⚠️ {deleteError}
+                  </div>
+                )}
+
+                <div className="flex gap-3 w-full pt-2">
+                  <button
+                    disabled={isDeleting}
+                    onClick={() => setPostToDelete(null)}
+                    className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 disabled:opacity-50 text-slate-700 rounded-xl text-xs font-bold transition-all active:scale-95 cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    disabled={isDeleting}
+                    onClick={async () => {
+                      setIsDeleting(true);
+                      setDeleteError(null);
+                      
+                      // For a responsive experience, filter immediately out of UI list
+                      setPosts(prev => prev.filter(p => p.id !== postToDelete.id));
+                      
+                      try {
+                        await deleteDoc(doc(db, 'posts', postToDelete.id));
+                        await logActivity("Deleted a campus feed post permanently.");
+                        setPostToDelete(null);
+                      } catch (err: any) {
+                        console.error("Failed to delete post:", err);
+                        // Add back to feed UI, since it failed
+                        const docSnap = { ...postToDelete };
+                        setPosts(prev => {
+                          if (prev.some(p => p.id === docSnap.id)) return prev;
+                          return [docSnap, ...prev].sort((a, b) => {
+                            const timeA = a.createdAt?.seconds || Date.now() / 1000;
+                            const timeB = b.createdAt?.seconds || Date.now() / 1000;
+                            return timeB - timeA;
+                          });
+                        });
+                        setDeleteError("Could not complete safety deletion on backend. Access check failed.");
+                        handleFirestoreError(err, OperationType.DELETE, 'posts/' + postToDelete.id);
+                      } finally {
+                        setIsDeleting(false);
+                      }
+                    }}
+                    className="flex-1 py-3 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white rounded-xl text-xs font-black transition-all hover:shadow-lg hover:shadow-red-500/10 active:scale-95 flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    {isDeleting ? (
+                      <>
+                        <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                        Deleting...
+                      </>
+                    ) : (
+                      "Delete Forever"
+                    )}
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
       </AnimatePresence>
     </div>
   );
@@ -1344,7 +1442,7 @@ function PostCommentsSection({ postId, postRef, userProfile, usersMap, postOwner
                     />
                   </span>
                   <span className="text-[8px] text-slate-400 uppercase font-mono tracking-tighter">
-                    {cm.createdAt ? formatDistanceToNow(cm.createdAt.toDate()) + ' ago' : 'just now'}
+                    {cm.createdAt && typeof cm.createdAt.toDate === 'function' ? formatDistanceToNow(cm.createdAt.toDate()) + ' ago' : 'just now'}
                   </span>
                 </div>
                 <p className="text-xs text-slate-700 leading-relaxed break-words pr-2">{cm.content}</p>

@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { Outlet, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { Home, PlaySquare, MessageCircle, ShoppingBag, User, ShieldCheck, LogOut, AlertCircle, Search, PhoneOff, PhoneCall, X } from 'lucide-react';
 import { auth, db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { collection, query, onSnapshot, where, doc, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { collection, query, onSnapshot, where, doc, updateDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { User as FirebaseUser } from 'firebase/auth';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
@@ -32,13 +32,17 @@ export default function Layout({ user, isVerified }: LayoutProps) {
 
     const setOnlineStatus = async (isOnline: boolean) => {
       try {
-        await updateDoc(userRef, {
+        if (!auth.currentUser || auth.currentUser.uid !== user.uid) return;
+        await setDoc(userRef, {
           online: isOnline,
           lastActive: serverTimestamp()
-        });
+        }, { merge: true });
         lastWriteTime = Date.now();
       } catch (err) {
         console.error("Failed to update user status to", isOnline, err);
+        try {
+          handleFirestoreError(err, OperationType.UPDATE, `users/${user.uid}`);
+        } catch (_) {}
       }
     };
 
@@ -69,7 +73,13 @@ export default function Layout({ user, isVerified }: LayoutProps) {
 
     // Before unload hook to gracefully set offline
     const handleBeforeUnload = () => {
-      updateDoc(userRef, { online: false });
+      if (auth.currentUser && auth.currentUser.uid === user.uid) {
+        setDoc(userRef, { online: false }, { merge: true }).catch(err => {
+          try {
+            handleFirestoreError(err, OperationType.UPDATE, `users/${user.uid}`);
+          } catch (_) {}
+        });
+      }
     };
     window.addEventListener('beforeunload', handleBeforeUnload);
 
@@ -82,7 +92,14 @@ export default function Layout({ user, isVerified }: LayoutProps) {
       window.removeEventListener('beforeunload', handleBeforeUnload);
       
       // Mark offline on unmount
-      updateDoc(userRef, { online: false }).catch(err => console.error(err));
+      if (auth.currentUser && auth.currentUser.uid === user.uid) {
+        setDoc(userRef, { online: false }, { merge: true }).catch(err => {
+          console.error(err);
+          try {
+            handleFirestoreError(err, OperationType.UPDATE, `users/${user.uid}`);
+          } catch (_) {}
+        });
+      }
     };
   }, [user]);
 
@@ -389,9 +406,14 @@ export default function Layout({ user, isVerified }: LayoutProps) {
                     setShowSignOutModal(false);
                     if (user) {
                       try {
-                        await updateDoc(doc(db, 'users', user.uid), { online: false });
+                        await setDoc(doc(db, 'users', user.uid), { online: false }, { merge: true });
                       } catch (err) {
                         console.error("Failed to mark offline on sign out:", err);
+                        try {
+                          handleFirestoreError(err, OperationType.UPDATE, `users/${user.uid}`);
+                        } catch (rethrown) {
+                          // Prevent crashing the sign-out UI
+                        }
                       }
                     }
                     auth.signOut();

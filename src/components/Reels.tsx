@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { db, auth, handleFirestoreError, OperationType } from '../lib/firebase';
-import { collection, query, orderBy, onSnapshot, addDoc, serverTimestamp, updateDoc, doc, increment, where, arrayUnion, arrayRemove } from 'firebase/firestore';
+import { collection, query, orderBy, onSnapshot, addDoc, serverTimestamp, updateDoc, doc, increment, where, arrayUnion, arrayRemove, deleteDoc } from 'firebase/firestore';
 import { motion, AnimatePresence } from 'motion/react';
-import { Heart, MessageCircle, Share2, Play, Pause, Music2, MapPin, Plus, X, Video, Send, Sparkles, Upload } from 'lucide-react';
+import { Heart, MessageCircle, Share2, Play, Pause, Music2, MapPin, Plus, X, Video, Send, Sparkles, Upload, Trash2 } from 'lucide-react';
 import { logActivity } from '../lib/activity';
 
 export default function Reels() {
@@ -16,6 +16,11 @@ export default function Reels() {
   const [videoFileName, setVideoFileName] = useState<string | null>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
   const [loading, setLoading] = useState(false);
+
+  // Custom Delete Reel confirmation modal state
+  const [reelToDelete, setReelToDelete] = useState<any | null>(null);
+  const [isDeletingReel, setIsDeletingReel] = useState(false);
+  const [deleteReelError, setDeleteReelError] = useState<string | null>(null);
 
   // Comments support
   const [showCommentsModal, setShowCommentsModal] = useState(false);
@@ -379,6 +384,22 @@ export default function Reels() {
                       </div>
                       <span className="text-[10px] font-black text-emerald-400">Share</span>
                     </motion.button>
+
+                    {(reel.userId === auth.currentUser?.uid || auth.currentUser?.email === 'nnanwubagabriel@gmail.com') && (
+                      <motion.button 
+                        whileHover={{ scale: 1.15 }}
+                        whileTap={{ scale: 0.85 }}
+                        onClick={() => {
+                          setReelToDelete(reel);
+                        }}
+                        className="flex flex-col items-center gap-1 group focus:outline-none"
+                      >
+                        <div className="p-3 bg-red-500/20 backdrop-blur-xl rounded-2xl group-hover:bg-red-500/40 transition-all border border-red-500/35">
+                          <Trash2 size={22} className="text-red-400 group-hover:text-red-300 transition-colors" />
+                        </div>
+                        <span className="text-[10px] font-black text-red-400">Delete</span>
+                      </motion.button>
+                    )}
                   </div>
                 </div>
               </div>
@@ -617,6 +638,101 @@ export default function Reels() {
                   <Send size={15} />
                 </button>
               </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* PERFECTLY RESPONSIVE ANIMATED CONFIRMATION DELETE REEL MODAL */}
+      <AnimatePresence>
+        {reelToDelete && (
+          <div className="fixed inset-0 z-[150] flex items-center justify-center p-4 text-left">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => {
+                if (!isDeletingReel) setReelToDelete(null);
+              }}
+              className="absolute inset-0 bg-slate-950/85 backdrop-blur-xs"
+            />
+            
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 15 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 15 }}
+              className="bg-white max-w-sm w-full rounded-3xl border border-slate-200 p-6 shadow-2xl relative z-10 text-slate-800"
+            >
+              <div className="flex flex-col items-center text-center space-y-4">
+                <div className="w-12 h-12 rounded-full bg-red-50 flex items-center justify-center text-red-500 animate-pulse border border-red-100">
+                  <Trash2 size={24} className="text-red-500 font-bold" />
+                </div>
+                
+                <div>
+                  <h3 className="font-extrabold text-slate-900 text-base">Permanently Delete Reel?</h3>
+                  <p className="text-slate-500 text-xs mt-1.5 leading-relaxed">
+                    Are you positive you wish to remove this video reel from the campus feed? This is irreversible and will purge it for all classmates.
+                  </p>
+                </div>
+
+                {deleteReelError && (
+                  <div className="w-full text-left p-3 rounded-2xl bg-red-50 border border-red-100/60 text-xs font-semibold text-red-600 leading-normal">
+                    ⚠️ {deleteReelError}
+                  </div>
+                )}
+
+                <div className="flex gap-3 w-full pt-2">
+                  <button
+                    disabled={isDeletingReel}
+                    onClick={() => setReelToDelete(null)}
+                    className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 disabled:opacity-50 text-slate-700 rounded-xl text-xs font-bold transition-all active:scale-95 cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    disabled={isDeletingReel}
+                    onClick={async () => {
+                      setIsDeletingReel(true);
+                      setDeleteReelError(null);
+                      
+                      // For a responsive experience, filter immediately out of UI list
+                      setReels(prev => prev.filter(r => r.id !== reelToDelete.id));
+                      
+                      try {
+                        await deleteDoc(doc(db, 'posts', reelToDelete.id));
+                        await logActivity("Deleted a campus reel video permanently.");
+                        setReelToDelete(null);
+                      } catch (err: any) {
+                        console.error("Failed to delete reel:", err);
+                        // Add back to reels UI list upon failure
+                        const docSnap = { ...reelToDelete };
+                        setReels(prev => {
+                          if (prev.some(r => r.id === docSnap.id)) return prev;
+                          return [docSnap, ...prev].sort((a, b) => {
+                            const timeA = a.createdAt?.seconds || Date.now() / 1000;
+                            const timeB = b.createdAt?.seconds || Date.now() / 1000;
+                            return timeB - timeA;
+                          });
+                        });
+                        setDeleteReelError("Could not complete safety deletion on backend. Access check failed.");
+                        handleFirestoreError(err, OperationType.DELETE, 'posts/' + reelToDelete.id);
+                      } finally {
+                        setIsDeletingReel(false);
+                      }
+                    }}
+                    className="flex-1 py-3 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white rounded-xl text-xs font-black transition-all hover:shadow-lg hover:shadow-red-500/10 active:scale-95 flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    {isDeletingReel ? (
+                      <>
+                        <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                        Deleting...
+                      </>
+                    ) : (
+                      "Delete Forever"
+                    )}
+                  </button>
+                </div>
+              </div>
             </motion.div>
           </div>
         )}

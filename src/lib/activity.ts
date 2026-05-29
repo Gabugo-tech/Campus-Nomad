@@ -1,20 +1,19 @@
 import { addDoc, collection, serverTimestamp } from 'firebase/firestore';
 import { db, auth, handleFirestoreError, OperationType } from './firebase';
 
-export async function logActivity(action: string) {
-  if (!auth.currentUser) return;
+export function logActivity(action: string): Promise<void> {
+  if (!auth.currentUser) return Promise.resolve();
   const path = 'activityLogs';
-  try {
-    await addDoc(collection(db, path), {
-      userEmail: auth.currentUser.email || 'unknown@campus.edu',
-      displayName: auth.currentUser.displayName || 'Anonymous Student',
-      action,
-      timestamp: serverTimestamp()
-    });
-  } catch (err: any) {
-    console.error("Failed to log activity event:", err);
-    if (err?.code === 'permission-denied' || err?.message?.includes('permission-denied') || err?.message?.includes('insufficient permissions')) {
-      handleFirestoreError(err, OperationType.WRITE, path);
-    }
-  }
+  
+  // Fire-and-forget background log execution to keep user interface snappy
+  addDoc(collection(db, path), {
+    userEmail: auth.currentUser.email || 'unknown@campus.edu',
+    displayName: auth.currentUser.displayName || 'Anonymous Student',
+    action,
+    timestamp: serverTimestamp()
+  }).catch((err: any) => {
+    console.warn("Background logActivity could not record event:", err?.message || err);
+  });
+
+  return Promise.resolve();
 }

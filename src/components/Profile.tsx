@@ -1,12 +1,53 @@
 import { useState, useEffect, useRef } from 'react';
 import { db, auth, handleFirestoreError, OperationType } from '../lib/firebase';
+import { updateProfile } from 'firebase/auth';
 import { doc, onSnapshot, collection, query, where, getDocs, updateDoc, setDoc, deleteDoc } from 'firebase/firestore';
 import { useParams, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'motion/react';
-import { Grid, ShoppingBag, Bookmark, CheckCircle2, MapPin, GraduationCap, Calendar, Edit3, MessageCircle, UserPlus, UserMinus, X, MoreVertical, LogOut, Sun, Moon } from 'lucide-react';
+import { Grid, ShoppingBag, Bookmark, CheckCircle2, MapPin, GraduationCap, Calendar, Edit3, MessageCircle, UserPlus, UserMinus, X, MoreVertical, LogOut, Sun, Moon, Loader2 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { logActivity } from '../lib/activity';
 import { VerificationBadge } from './VerificationBadge';
+
+const compressImage = (file: File, maxWidth = 400, maxHeight = 400, quality = 0.75): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = (event) => {
+      const img = new Image();
+      img.src = event.target?.result as string;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let width = img.width;
+        let height = img.height;
+
+        if (width > height) {
+          if (width > maxWidth) {
+            height = Math.round((height * maxWidth) / width);
+            width = maxWidth;
+          }
+        } else {
+          if (height > maxHeight) {
+            width = Math.round((width * maxHeight) / height);
+            height = maxHeight;
+          }
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          resolve(event.target?.result as string);
+          return;
+        }
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      };
+      img.onerror = (err) => reject(err);
+    };
+    reader.onerror = (err) => reject(err);
+  });
+};
 
 export default function Profile() {
   const { userId } = useParams();
@@ -15,6 +56,7 @@ export default function Profile() {
   const [activeTab, setActiveTab] = useState<'posts' | 'marketplace' | 'saved'>('posts');
   const [userPosts, setUserPosts] = useState<any[]>([]);
   const [userMarketItems, setUserMarketItems] = useState<any[]>([]);
+  const [isUploading, setIsUploading] = useState(false);
 
   const [isDarkMode, setIsDarkMode] = useState(() => {
     return document.documentElement.classList.contains('dark') || localStorage.getItem('theme') === 'dark';
@@ -301,6 +343,7 @@ export default function Profile() {
     if (!auth.currentUser || !editName.trim()) return;
 
     try {
+      // Update Firestore document first
       await updateDoc(doc(db, 'users', auth.currentUser.uid), {
         displayName: editName.trim(),
         bio: editBio.trim(),
@@ -308,6 +351,12 @@ export default function Profile() {
         course: editCourse.trim(),
         year: editYear.trim()
       });
+
+      // Update Firebase Auth credential in real time
+      await updateProfile(auth.currentUser, {
+        displayName: editName.trim()
+      });
+
       await logActivity("Updated their custom student profile details");
       setShowEditModal(false);
     } catch (err) {
@@ -405,23 +454,35 @@ export default function Profile() {
     }
   };
 
-  const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleAvatarChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      const reader = new FileReader();
-      reader.onloadend = async () => {
+      setIsUploading(true);
+      try {
+        const compressedBase64 = await compressImage(file, 256, 256, 0.7);
         if (!auth.currentUser) return;
-        try {
-          const base64Str = reader.result as string;
-          // Update /users/{uid} document
-          await updateDoc(doc(db, 'users', auth.currentUser.uid), {
-            avatarUrl: base64Str
-          });
-        } catch (error) {
-          console.error("Avatar upload failed:", error);
-        }
-      };
-      reader.readAsDataURL(file);
+        
+        // Update /users/{uid} document
+        await updateDoc(doc(db, 'users', auth.currentUser.uid), {
+          avatarUrl: compressedBase64
+        });
+        
+        // Update Firebase Auth identity photoURL if safe, otherwise use compliant initials placeholder
+        const authPhotoUrl = compressedBase64.length < 2048 
+          ? compressedBase64 
+          : `https://api.dicebear.com/7.x/initials/svg?seed=${auth.currentUser.email || auth.currentUser.uid}`;
+        
+        await updateProfile(auth.currentUser, {
+          photoURL: authPhotoUrl
+        });
+
+        // Update the local profile state immediately for crisp real-time rendering feedback
+        setProfile((prev: any) => prev ? { ...prev, avatarUrl: compressedBase64 } : prev);
+      } catch (error) {
+        console.error("Avatar upload failed:", error);
+      } finally {
+        setIsUploading(false);
+      }
     }
   };
 
@@ -439,13 +500,23 @@ export default function Profile() {
         <div className="px-8 pb-8 relative">
           <div className="flex flex-col md:flex-row items-end gap-6 -mt-16">
             <div className="relative group shrink-0">
-              <img
-                src={profile.avatarUrl || `https://api.dicebear.com/7.x/initials/svg?seed=${profile.email}`}
-                className="w-32 h-32 rounded-[2rem] object-cover border-4 border-white shadow-xl bg-white cursor-pointer hover:brightness-95 transition-all"
-                onClick={() => isMe && avatarInputRef.current?.click()}
-                referrerPolicy="no-referrer"
-                alt=""
-              />
+              <div className="relative w-32 h-32 rounded-[2rem] overflow-hidden border-4 border-white shadow-xl bg-white">
+                <img
+                  src={profile.avatarUrl || `https://api.dicebear.com/7.x/initials/svg?seed=${profile.email}`}
+                  className={cn(
+                    "w-full h-full object-cover cursor-pointer hover:brightness-95 transition-all",
+                    isUploading && "brightness-75 transition-all duration-300 pointer-events-none"
+                  )}
+                  onClick={() => isMe && !isUploading && avatarInputRef.current?.click()}
+                  referrerPolicy="no-referrer"
+                  alt=""
+                />
+                {isUploading && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-slate-900/40 backdrop-blur-[2px]">
+                    <Loader2 size={24} className="text-white animate-spin" />
+                  </div>
+                )}
+              </div>
               {isMe && (
                 <>
                   <input
@@ -454,10 +525,15 @@ export default function Profile() {
                     ref={avatarInputRef}
                     onChange={handleAvatarChange}
                     className="hidden"
+                    disabled={isUploading}
                   />
                   <button 
-                    onClick={() => avatarInputRef.current?.click()}
-                    className="absolute bottom-2 right-2 p-2 bg-slate-900 text-white rounded-xl shadow-lg hover:bg-slate-800 transition-all"
+                    onClick={() => !isUploading && avatarInputRef.current?.click()}
+                    disabled={isUploading}
+                    className={cn(
+                      "absolute bottom-2 right-2 p-2 bg-slate-900 text-white rounded-xl shadow-lg hover:bg-slate-800 transition-all",
+                      isUploading && "opacity-50 pointer-events-none"
+                    )}
                     title="Upload Custom Profile Picture"
                   >
                     <Edit3 size={16} />
@@ -938,7 +1014,7 @@ export default function Profile() {
                   onClick={async () => {
                     if (auth.currentUser) {
                       try {
-                        await updateDoc(doc(db, 'users', auth.currentUser.uid), { online: false });
+                        await setDoc(doc(db, 'users', auth.currentUser.uid), { online: false }, { merge: true });
                       } catch (err) {
                         console.error("Failed to mark offline in Profile logout:", err);
                       }
