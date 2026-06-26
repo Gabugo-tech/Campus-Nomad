@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
-import { db, auth, handleFirestoreError, OperationType } from '../lib/firebase';
+import { db, auth, handleFirestoreError, OperationType, onSnapshot } from '../lib/firebase';
 import { updateProfile } from 'firebase/auth';
-import { doc, onSnapshot, collection, query, where, getDocs, updateDoc, setDoc, deleteDoc } from 'firebase/firestore';
+import { doc, collection, query, where, getDocs, updateDoc, setDoc, deleteDoc } from 'firebase/firestore';
 import { useParams, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'motion/react';
-import { Grid, ShoppingBag, Bookmark, CheckCircle2, MapPin, GraduationCap, Calendar, Edit3, MessageCircle, UserPlus, UserMinus, X, MoreVertical, LogOut, Sun, Moon, Loader2 } from 'lucide-react';
+import { Grid, ShoppingBag, Bookmark, CheckCircle2, MapPin, GraduationCap, Calendar, Edit3, MessageCircle, UserPlus, UserMinus, X, MoreVertical, LogOut, Sun, Moon, Loader2, Sparkles, Wand2, Trash2, Eye } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { logActivity } from '../lib/activity';
 import { VerificationBadge } from './VerificationBadge';
@@ -57,6 +57,31 @@ export default function Profile() {
   const [userPosts, setUserPosts] = useState<any[]>([]);
   const [userMarketItems, setUserMarketItems] = useState<any[]>([]);
   const [isUploading, setIsUploading] = useState(false);
+  const [deletingMarketItemId, setDeletingMarketItemId] = useState<string | null>(null);
+  const [updatingMarketItemId, setUpdatingMarketItemId] = useState<string | null>(null);
+
+  const handleToggleSoldStatus = async (item: any) => {
+    const newStatus = item.status === 'sold' ? 'active' : 'sold';
+    setUpdatingMarketItemId(item.id);
+    const path = `marketplace/${item.id}`;
+    try {
+      await updateDoc(doc(db, 'marketplace', item.id), {
+        status: newStatus
+      });
+      // also update locally immediately for better UX
+      setUserMarketItems((prev) =>
+        prev.map((itm) => (itm.id === item.id ? { ...itm, status: newStatus } : itm))
+      );
+    } catch (err: any) {
+      console.error("Failed to update marketplace status:", err);
+      alert("Failed to update listing status: " + (err.message || err));
+      try {
+        handleFirestoreError(err, OperationType.UPDATE, path);
+      } catch (f) {}
+    } finally {
+      setUpdatingMarketItemId(null);
+    }
+  };
 
   const [isDarkMode, setIsDarkMode] = useState(() => {
     return document.documentElement.classList.contains('dark') || localStorage.getItem('theme') === 'dark';
@@ -88,6 +113,12 @@ export default function Profile() {
 
   // Edit Profile States
   const [showEditModal, setShowEditModal] = useState(false);
+  const [showAiAvatarModal, setShowAiAvatarModal] = useState(false);
+  const [aiPrompt, setAiPrompt] = useState('');
+  const [isGeneratingAvatar, setIsGeneratingAvatar] = useState(false);
+  const [generatedAvatarUrl, setGeneratedAvatarUrl] = useState<string | null>(null);
+  const [avatarGenerationError, setAvatarGenerationError] = useState<string | null>(null);
+  const [avatarGenerationWarning, setAvatarGenerationWarning] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [editBio, setEditBio] = useState('');
   const [editCampus, setEditCampus] = useState('');
@@ -486,6 +517,92 @@ export default function Profile() {
     }
   };
 
+  const handleGenerateAiAvatar = async () => {
+    if (!aiPrompt.trim()) {
+      setAvatarGenerationError("Please describe the kind of avatar you'd like to create.");
+      return;
+    }
+
+    setIsGeneratingAvatar(true);
+    setAvatarGenerationError(null);
+    setAvatarGenerationWarning(null);
+    setGeneratedAvatarUrl(null);
+
+    try {
+      // Get CSRF Token
+      const token = (window as any).csrfToken || '';
+
+      const response = await fetch('/api/generate-avatar', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': token
+        },
+        body: JSON.stringify({ prompt: aiPrompt })
+      });
+
+      let data: any = {};
+      const contentType = response.headers.get("content-type");
+      if (contentType && contentType.includes("application/json")) {
+        data = await response.json();
+      } else {
+        const textFallback = await response.text();
+        // If it's HTML, check if it specifies a rate limit, server error or is just an nginx layout
+        if (textFallback.includes("<!DOCTYPE") || textFallback.includes("<!doctype")) {
+          throw new Error(`Server returned an invalid HTML response (Status ${response.status}). Please verify that your Gemini API Key is configured in the Settings > Secrets panel of your AI Studio.`);
+        }
+        throw new Error(textFallback.slice(0, 150) || `Request failed with status ${response.status}`);
+      }
+
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to generate AI avatar.");
+      }
+
+      if (data.isFallback) {
+        setAvatarGenerationWarning(data.warning);
+      }
+      setGeneratedAvatarUrl(data.imageUrl);
+      logActivity(auth.currentUser?.uid || 'unknown', 'generate_ai_avatar', `Generated AI profile avatar with prompt: ${aiPrompt}`);
+    } catch (err: any) {
+      console.error("AI avatar generation error:", err);
+      setAvatarGenerationError(err.message || "Something went wrong generating the avatar. Please try again.");
+    } finally {
+      setIsGeneratingAvatar(false);
+    }
+  };
+
+  const handleApplyAiAvatar = async () => {
+    if (!generatedAvatarUrl) return;
+    setIsUploading(true);
+    setShowAiAvatarModal(false);
+
+    try {
+      if (!auth.currentUser) return;
+
+      // Update /users/{uid} document
+      await updateDoc(doc(db, 'users', auth.currentUser.uid), {
+        avatarUrl: generatedAvatarUrl
+      });
+
+      // Update Firebase Auth identity photoURL if secure
+      const authPhotoUrl = generatedAvatarUrl.length < 2048 
+        ? generatedAvatarUrl 
+        : `https://api.dicebear.com/7.x/initials/svg?seed=${auth.currentUser.email || auth.currentUser.uid}`;
+
+      await updateProfile(auth.currentUser, {
+        photoURL: authPhotoUrl
+      });
+
+      setProfile((prev: any) => prev ? { ...prev, avatarUrl: generatedAvatarUrl } : prev);
+      setGeneratedAvatarUrl(null);
+      setAiPrompt('');
+    } catch (err) {
+      console.error("Failed to apply AI avatar:", err);
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
   if (!profile) return (
     <div className="h-48 bg-white rounded-3xl animate-pulse" />
   );
@@ -561,6 +678,14 @@ export default function Profile() {
                   >
                     <Edit3 size={16} />
                     Edit Profile
+                  </button>
+
+                  <button
+                    onClick={() => setShowAiAvatarModal(true)}
+                    className="px-5 py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-2xl font-bold flex items-center gap-2 hover:from-blue-700 hover:to-indigo-700 transition-all text-xs shadow-md shadow-blue-100"
+                  >
+                    <Sparkles size={16} />
+                    AI Avatar
                   </button>
                   
                   {/* Elegant Three-Dots Settings Menu */}
@@ -730,7 +855,7 @@ export default function Profile() {
                   onClick={() => navigate('/feed')}
                 >
                   {post.mediaUrl ? (
-                    <img src={post.mediaUrl} className="w-full h-full object-cover" alt="" referrerPolicy="no-referrer" />
+                    <img src={post.mediaUrl} className="w-full h-full object-cover" alt="" referrerPolicy="no-referrer" loading="lazy" />
                   ) : (
                     <div className="w-full h-full p-6 text-[11px] text-slate-600 font-medium leading-relaxed overflow-hidden">
                       {post.content}
@@ -757,13 +882,91 @@ export default function Profile() {
                   key={item.id}
                   whileHover={{ scale: 1.02 }}
                   onClick={() => navigate('/marketplace')}
-                  className="bg-white border border-slate-200 p-4 rounded-3xl shadow-sm hover:shadow-md transition-all cursor-pointer"
+                  className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-4 rounded-3xl shadow-sm hover:shadow-md transition-all cursor-pointer flex flex-col justify-between text-left"
                 >
-                  <div className="aspect-square bg-slate-50 rounded-2xl overflow-hidden border border-slate-100 mb-3">
-                    <img src={item.image || item.images?.[0] || 'https://images.unsplash.com/photo-1523240795612-9a054b0db644?w=500'} className="w-full h-full object-cover" alt="" />
+                  <div>
+                    <div className="aspect-square bg-slate-50 dark:bg-slate-950 rounded-2xl overflow-hidden border border-slate-100 dark:border-slate-800 mb-3 relative group">
+                      <img 
+                        src={item.image || item.images?.[0] || 'https://images.unsplash.com/photo-1523240795612-9a054b0db644?w=500'} 
+                        className="w-full h-full object-cover" 
+                        alt={item.title} 
+                        referrerPolicy="no-referrer"
+                        loading="lazy"
+                      />
+                      {item.status === 'sold' && (
+                        <div className="absolute inset-0 bg-slate-950/40 backdrop-blur-[1px] flex items-center justify-center z-10">
+                          <span className="px-2.5 py-1 bg-red-650 text-white font-black text-[9px] uppercase tracking-widest rounded-xl shadow-md border border-red-500 transform rotate-[-2deg]">
+                            Sold Out
+                          </span>
+                        </div>
+                      )}
+                      {/* Views Badge overlay */}
+                      <div className="absolute top-2 right-2 px-2 py-0.5 bg-white/95 dark:bg-slate-900/95 text-slate-700 dark:text-slate-350 rounded-lg text-[9px] font-bold flex items-center gap-1 shadow-sm border border-slate-100 dark:border-slate-800 z-10">
+                        <Eye size={10} className="text-slate-505" />
+                        <span>{item.views || 0}</span>
+                      </div>
+                    </div>
+                    <h4 className="font-bold text-slate-800 dark:text-slate-100 text-xs truncate" title={item.title}>{item.title}</h4>
+                    <p className="text-blue-600 dark:text-blue-400 font-black text-xs mt-1">₦{Number(item.price).toLocaleString()}</p>
                   </div>
-                  <h4 className="font-bold text-slate-800 text-xs truncate">{item.title}</h4>
-                  <p className="text-blue-600 font-black text-xs mt-1">₦{Number(item.price).toLocaleString()}</p>
+
+                  {isMe && (
+                    <div className="mt-3 flex flex-col gap-1.5 w-full">
+                      <div className="flex items-center gap-1.5 w-full">
+                        <div className={`flex-1 text-center py-1 bg-slate-50 dark:bg-slate-950 text-[9px] font-extrabold uppercase border rounded-xl ${
+                          item.status === 'sold'
+                            ? 'bg-red-50 dark:bg-red-950/20 text-red-700 dark:text-red-400 border-red-100 dark:border-red-950'
+                            : 'bg-green-50 dark:bg-green-950/20 text-green-700 dark:text-green-400 border-green-100 dark:border-green-950'
+                        }`}>
+                          {item.status === 'sold' ? 'Sold Out' : 'Active'}
+                        </div>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleToggleSoldStatus(item); }}
+                          disabled={updatingMarketItemId === item.id}
+                          className="px-2.5 py-1 border border-slate-250 dark:border-slate-800 bg-slate-55 dark:bg-slate-950 hover:bg-slate-100 dark:hover:bg-slate-900 text-slate-650 dark:text-slate-300 rounded-xl text-[9px] font-bold uppercase tracking-wider transition-all cursor-pointer flex items-center justify-center gap-1 disabled:opacity-50 shrink-0"
+                          title={item.status === 'sold' ? "Mark as Active" : "Mark as Sold"}
+                        >
+                          {updatingMarketItemId === item.id ? (
+                            <Loader2 size={10} className="animate-spin text-slate-500" />
+                          ) : item.status === 'sold' ? (
+                            'Active'
+                          ) : (
+                            'Sold'
+                          )}
+                        </button>
+                      </div>
+                      <button
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          if (!window.confirm(`Are you sure you want to permanently delete "${item.title}"?`)) return;
+                          setDeletingMarketItemId(item.id);
+                          try {
+                            await deleteDoc(doc(db, 'marketplace', item.id));
+                            alert("Product listing deleted successfully!");
+                          } catch (err: any) {
+                            console.error("Failed to delete market item from profile tab:", err);
+                            alert("Failed to delete item: " + err.message);
+                          } finally {
+                            setDeletingMarketItemId(null);
+                          }
+                        }}
+                        disabled={deletingMarketItemId === item.id}
+                        className="w-full py-1.5 bg-red-50 hover:bg-red-600 text-red-650 hover:text-white dark:bg-red-950/20 dark:hover:bg-red-650 dark:text-red-400 dark:hover:text-white rounded-xl text-[10px] font-black uppercase tracking-wider transition-all border border-red-100 dark:border-red-950 hover:border-red-650 flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                      >
+                        {deletingMarketItemId === item.id ? (
+                          <>
+                            <Loader2 size={11} className="animate-spin" />
+                            Deleting...
+                          </>
+                        ) : (
+                          <>
+                            <Trash2 size={11} />
+                            Delete Listing
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  )}
                 </motion.div>
               ))
             ) : (
@@ -971,6 +1174,161 @@ export default function Profile() {
                   </button>
                 </div>
               </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* AI Avatar Modal */}
+      <AnimatePresence>
+        {showAiAvatarModal && (
+          <div className="fixed inset-0 z-[120] flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => {
+                if (!isGeneratingAvatar) {
+                  setShowAiAvatarModal(false);
+                  setGeneratedAvatarUrl(null);
+                  setAvatarGenerationError(null);
+                }
+              }}
+              className="absolute inset-0 bg-slate-950/60 backdrop-blur-xs"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 15 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 15 }}
+              className="bg-white max-w-sm w-full rounded-[2.5rem] border border-slate-200 p-6 shadow-2xl relative z-10 text-slate-800"
+            >
+              <div className="flex items-center justify-between mb-4 pb-2 border-b border-slate-100">
+                <span className="text-sm font-black italic-none uppercase tracking-wider flex items-center gap-1.5 text-slate-900">
+                  <Sparkles size={16} className="text-indigo-600 animate-pulse" /> AI Avatar Maker
+                </span>
+                <button 
+                  onClick={() => {
+                    setShowAiAvatarModal(false);
+                    setGeneratedAvatarUrl(null);
+                    setAvatarGenerationError(null);
+                  }}
+                  disabled={isGeneratingAvatar}
+                  className="p-1 hover:bg-slate-100 rounded-full transition-all disabled:opacity-50"
+                  type="button"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="space-y-4 text-left">
+                <p className="text-xs text-slate-500 leading-relaxed font-semibold">
+                  Generate a completely unique avatar designed by Gemini using just a text description. Say goodbye to plain initials!
+                </p>
+
+                <div>
+                  <label className="text-[10px] font-mono font-black text-slate-400 uppercase tracking-widest block mb-1">Describe your avatar style</label>
+                  <textarea
+                    value={aiPrompt}
+                    onChange={(e) => setAiPrompt(e.target.value)}
+                    disabled={isGeneratingAvatar}
+                    placeholder="e.g. A cybernetic nomad coder carrying a glowing backpack, 3D animated style, neon lighting..."
+                    className="w-full p-3.5 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-2 focus:ring-indigo-500 outline-none text-xs font-semibold leading-relaxed resize-none h-20"
+                  />
+                </div>
+
+                {/* Style Preset Chips */}
+                <div className="space-y-1">
+                  <span className="text-[9px] font-mono font-black text-slate-400 uppercase tracking-widest block">Style Presets (Tap to use)</span>
+                  <div className="flex flex-wrap gap-1.5 pt-1">
+                    {[
+                      { label: "🧸 3D Claymation", value: "3D claymation cartoon toy style student avatar, soft studio lighting" },
+                      { label: "🎮 Cyberpunk", value: "cyberpunk cybernetic nomad student developer, glowing spectacles, purple and teal neon backlight" },
+                      { label: "🌸 Cute Anime", value: "aesthetic anime student with cute expression studying, soft lofi colors, cozy vibe" },
+                      { label: "🖌️ Watercolor", value: "watercolor illustration of a creative student profile, artistic paint splashes, pastel background" },
+                      { label: "👾 8-Bit Pixel", value: "retro pixel art 16-bit student geek avatar badge, crisp pixels" },
+                    ].map((preset, i) => (
+                      <button
+                        key={i}
+                        type="button"
+                        disabled={isGeneratingAvatar}
+                        onClick={() => setAiPrompt(preset.value)}
+                        className="px-2.5 py-1 text-[10px] bg-slate-100 hover:bg-indigo-50 border border-slate-200 hover:border-indigo-200 text-slate-650 hover:text-indigo-600 rounded-full font-bold transition-all disabled:opacity-40"
+                      >
+                        {preset.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {avatarGenerationError && (
+                  <div className="p-3 bg-red-50 border border-red-150 text-red-650 rounded-2xl text-[11px] font-semibold leading-relaxed">
+                    {avatarGenerationError}
+                  </div>
+                )}
+
+                {/* Loading / Preview state */}
+                {isGeneratingAvatar && (
+                  <div className="flex flex-col items-center justify-center p-8 bg-slate-50 rounded-[2rem] border border-dashed border-slate-200 animate-pulse">
+                    <Loader2 size={32} className="text-indigo-600 animate-spin mb-3" />
+                    <p className="text-[11px] text-slate-600 font-bold font-mono uppercase tracking-widest">Generating with Gemini...</p>
+                    <p className="text-[10px] text-slate-400 mt-1">This can take up to 10 seconds</p>
+                  </div>
+                )}
+
+                {generatedAvatarUrl && (
+                  <div className="flex flex-col items-center justify-center p-4 bg-slate-50 border border-slate-100 rounded-[2.5rem] gap-3">
+                    <span className="text-[9px] font-mono font-black text-slate-400 uppercase tracking-widest block">Magnificent Creation</span>
+                    <div className="w-32 h-32 rounded-[2rem] overflow-hidden border-4 border-white shadow-xl bg-white shrink-0 relative">
+                      <img
+                        src={generatedAvatarUrl}
+                        className="w-full h-full object-cover"
+                        referrerPolicy="no-referrer"
+                        alt="Generated AI avatar selection"
+                      />
+                    </div>
+                    {avatarGenerationWarning && (
+                      <div className="p-3 bg-amber-50 border border-amber-100 text-amber-800 rounded-2xl text-[10px] font-semibold leading-relaxed text-center mt-1">
+                        ⚠️ {avatarGenerationWarning}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <div className="flex gap-3 pt-2">
+                  {!generatedAvatarUrl ? (
+                    <button
+                      type="button"
+                      onClick={handleGenerateAiAvatar}
+                      disabled={isGeneratingAvatar || !aiPrompt.trim()}
+                      className="w-full py-3.5 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-2xl font-bold text-xs uppercase hover:from-blue-700 hover:to-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-blue-100 flex items-center justify-center gap-2 transition-all"
+                    >
+                      <Sparkles size={14} />
+                      Generate Avatar
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setGeneratedAvatarUrl(null);
+                        }}
+                        disabled={isGeneratingAvatar}
+                        className="flex-1 py-3.5 bg-slate-100 text-slate-600 rounded-2xl font-bold text-xs uppercase hover:bg-slate-200 transition-all disabled:opacity-50"
+                      >
+                        Start Over
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleApplyAiAvatar}
+                        disabled={isGeneratingAvatar}
+                        className="flex-1 py-3.5 bg-slate-900 text-white rounded-2xl font-bold text-xs uppercase hover:bg-slate-800 transition-all disabled:opacity-50 shadow-lg shadow-slate-100"
+                      >
+                        Apply Avatar 🔮
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
             </motion.div>
           </div>
         )}

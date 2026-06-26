@@ -63,6 +63,7 @@
         "images": { "type": "array" },
         "campus": { "type": "string" },
         "status": { "type": "string", "enum": ["active", "sold", "deleted"] },
+        "views": { "type": "number", "description": "Count of times this listing has been viewed" },
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["userId", "title", "price", "campus"]
@@ -79,6 +80,7 @@
         "text": { "type": "string" },
         "imageUrl": { "type": "string" },
         "read": { "type": "boolean" },
+        "reactions": { "type": "object", "description": "Emoji keys mapped to lists of user IDs" },
         "createdAt": { "type": "string", "format": "date-time" }
       }
     },

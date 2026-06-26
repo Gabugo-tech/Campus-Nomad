@@ -22,6 +22,8 @@ export interface CallInterfaceProps {
   toggleScreenShare: () => void;
   isRecipientOffline?: boolean;
   ping?: number | null;
+  packetLoss?: number | null;
+  jitter?: number | null;
   remoteStreams?: {
     [peerId: string]: {
       stream: MediaStream;
@@ -217,6 +219,8 @@ export default function CallInterface({
   toggleScreenShare,
   isRecipientOffline = false,
   ping = null,
+  packetLoss = null,
+  jitter = null,
   remoteStreams = {}
 }: CallInterfaceProps) {
   const localVideoRef = useRef<HTMLVideoElement>(null);
@@ -356,11 +360,31 @@ export default function CallInterface({
                     {ping !== undefined && ping !== null && (
                       <span className={cn(
                         "ml-2 text-[9px] px-1.5 py-0.5 rounded-md font-mono font-extrabold",
-                        ping < 100 ? "text-green-400 bg-green-500/10 border border-green-500/20" :
-                        ping < 250 ? "text-amber-400 bg-amber-500/10 border border-amber-500/20" :
+                        ping < 120 ? "text-green-400 bg-green-500/10 border border-green-500/20" :
+                        ping < 260 ? "text-amber-400 bg-amber-500/10 border border-amber-500/20" :
                         "text-red-400 bg-red-500/10 border border-red-500/20"
                       )}>
-                        {ping} ms
+                        {ping} ms RTT
+                      </span>
+                    )}
+                    {packetLoss !== undefined && packetLoss !== null && (
+                      <span className={cn(
+                        "ml-1 text-[9px] px-1.5 py-0.5 rounded-md font-mono font-extrabold",
+                        packetLoss < 3 ? "text-green-400 bg-green-500/10 border border-green-500/20" :
+                        packetLoss < 12 ? "text-amber-400 bg-amber-500/10 border border-amber-500/20" :
+                        "text-red-400 bg-red-500/10 border border-red-500/20"
+                      )}>
+                        {packetLoss} Loss
+                      </span>
+                    )}
+                    {jitter !== undefined && jitter !== null && (
+                      <span className={cn(
+                        "ml-1 text-[9px] px-1.5 py-0.5 rounded-md font-mono font-extrabold",
+                        jitter < 15 ? "text-green-400 bg-green-500/10 border border-green-500/20" :
+                        jitter < 40 ? "text-amber-400 bg-amber-500/10 border border-amber-500/20" :
+                        "text-red-400 bg-red-500/10 border border-red-500/20"
+                      )}>
+                        {jitter} ms Jitter
                       </span>
                     )}
                   </div>

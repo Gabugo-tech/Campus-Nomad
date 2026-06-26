@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
+import { createMockMediaStream } from '../lib/utils';
 
 export type CallState = 'idle' | 'outgoing' | 'incoming' | 'active';
 export type CallType = 'voice' | 'video';
@@ -25,8 +26,10 @@ export function useWebRTC(roomId: string, config: WebRTCConfig) {
   const [callerDetails, setCallerDetails] = useState<any>(null);
   const [callTimer, setCallTimer] = useState(0);
   const [ping, setPing] = useState<number | null>(null);
+  const [packetLoss, setPacketLoss] = useState<number | null>(null);
+  const [jitter, setJitter] = useState<number | null>(null);
 
-  // Monitor active session stats and latency (ping)
+  // Monitor active session stats and latency (ping/packet_loss/jitter)
   useEffect(() => {
     let pingInterval: any;
     if (callState === 'active') {
@@ -35,14 +38,30 @@ export function useWebRTC(roomId: string, config: WebRTCConfig) {
         if (pc) {
           try {
             const stats = await pc.getStats();
+            let currentPing = null;
+            let currentPacketsLost = null;
+            let currentJitter = null;
+
             stats.forEach(report => {
               if (report.type === 'candidate-pair' && report.state === 'succeeded') {
                 const rtt = report.currentRoundTripTime;
                 if (rtt !== undefined) {
-                  setPing(Math.round(rtt * 1000));
+                  currentPing = Math.round(rtt * 1000);
+                }
+              }
+              if (report.type === 'inbound-rtp') {
+                if (report.packetsLost !== undefined) {
+                  currentPacketsLost = report.packetsLost;
+                }
+                if (report.jitter !== undefined) {
+                  currentJitter = Math.round(report.jitter * 1000); // convert to ms
                 }
               }
             });
+
+            setPing(currentPing);
+            setPacketLoss(currentPacketsLost);
+            setJitter(currentJitter);
           } catch (err) {
             console.warn("Could not query RTCPeerConnection stats in hook:", err);
           }
@@ -50,6 +69,8 @@ export function useWebRTC(roomId: string, config: WebRTCConfig) {
       }, 2005);
     } else {
       setPing(null);
+      setPacketLoss(null);
+      setJitter(null);
     }
     return () => clearInterval(pingInterval);
   }, [callState]);
@@ -71,7 +92,10 @@ export function useWebRTC(roomId: string, config: WebRTCConfig) {
   useEffect(() => {
     const url = socketUrl || window.location.origin;
     const socket = io(url, {
-      transports: ['websocket', 'polling']
+      transports: ['websocket', 'polling'],
+      auth: {
+        token: (window as any).csrfToken || ''
+      }
     });
     socketRef.current = socket;
 
@@ -255,8 +279,15 @@ export function useWebRTC(roomId: string, config: WebRTCConfig) {
       audio: true
     };
 
+    let stream: MediaStream;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      stream = await navigator.mediaDevices.getUserMedia(constraints);
+    } catch (err: any) {
+      console.warn("Accessing hardware MediaStream device failed, falling back to virtual media source:", err);
+      stream = createMockMediaStream(type);
+    }
+
+    try {
       setLocalStream(stream);
       localStreamRef.current = stream;
       if (stream.getVideoTracks().length > 0) {
@@ -274,8 +305,8 @@ export function useWebRTC(roomId: string, config: WebRTCConfig) {
 
       setCallerDetails({ callerId: userId, callerName: receiverName, callerAvatar: receiverAvatar, receiverId, callType: type });
       socketRef.current?.emit('call-user', callPayload);
-    } catch (err) {
-      console.error("Accessing MediaStream device failed:", err);
+    } catch (err: any) {
+      console.error("Initiating call with media failed:", err);
       setConnectionStatus('failed');
       setTimeout(() => setCallState('idle'), 2000);
     }
@@ -291,8 +322,15 @@ export function useWebRTC(roomId: string, config: WebRTCConfig) {
       audio: true
     };
 
+    let stream: MediaStream;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      stream = await navigator.mediaDevices.getUserMedia(constraints);
+    } catch (err: any) {
+      console.warn("Media permission check failed on accept, falling back to mock stream:", err);
+      stream = createMockMediaStream(callType);
+    }
+
+    try {
       setLocalStream(stream);
       localStreamRef.current = stream;
       if (stream.getVideoTracks().length > 0) {
@@ -307,7 +345,7 @@ export function useWebRTC(roomId: string, config: WebRTCConfig) {
       // Initialise receiver peer connection
       initPeerConnection(stream, callerDetails.callerId, false);
     } catch (error) {
-      console.error("Media permission check failed on accept:", error);
+      console.error("Initializing call receiver connection with media failed:", error);
       socketRef.current?.emit('reject-call', {
         callerId: callerDetails.callerId,
         receiverId: userId
@@ -370,8 +408,15 @@ export function useWebRTC(roomId: string, config: WebRTCConfig) {
         };
 
         setIsScreenSharing(true);
-      } catch (err) {
+      } catch (err: any) {
         console.warn("Screen share declined or failed:", err);
+        let errorMsg = "Could not activate screen sharing.";
+        if (err.name === 'NotAllowedError' || err.message?.includes('permissions policy')) {
+          errorMsg = "Screen sharing is blocked in this sandboxed frame. For the full collaborative video & screen sharing experience, click the 'Open in New Tab' icon at the top right of your screen!";
+        } else {
+          errorMsg += ` Detail: ${err.message || err}`;
+        }
+        alert(errorMsg);
       }
     } else {
       stopScreenShare();
@@ -423,6 +468,8 @@ export function useWebRTC(roomId: string, config: WebRTCConfig) {
     callerDetails,
     callTimer,
     ping,
+    packetLoss,
+    jitter,
     startCall,
     acceptCall,
     declineCall,

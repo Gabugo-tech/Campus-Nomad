@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
-import { db, auth, handleFirestoreError, OperationType } from '../lib/firebase';
-import { collection, query, orderBy, onSnapshot, addDoc, serverTimestamp, updateDoc, doc, increment, where, arrayUnion, arrayRemove, deleteDoc } from 'firebase/firestore';
+import { db, auth, handleFirestoreError, OperationType, onSnapshot } from '../lib/firebase';
+import { collection, query, orderBy, addDoc, serverTimestamp, updateDoc, doc, increment, where, arrayUnion, arrayRemove, deleteDoc } from 'firebase/firestore';
 import { motion, AnimatePresence } from 'motion/react';
 import { Heart, MessageCircle, Share2, Play, Pause, Music2, MapPin, Plus, X, Video, Send, Sparkles, Upload, Trash2 } from 'lucide-react';
 import { logActivity } from '../lib/activity';
+import { reelUploader } from '../lib/reelUploader';
 
 export default function Reels() {
   const [reels, setReels] = useState<any[]>([]);
@@ -16,6 +17,64 @@ export default function Reels() {
   const [videoFileName, setVideoFileName] = useState<string | null>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
   const [loading, setLoading] = useState(false);
+  const [uploaderTasks, setUploaderTasks] = useState<any[]>([]);
+
+  const [isLiteMode, setIsLiteMode] = useState(localStorage.getItem('campus_connect_lite_mode') === 'true');
+  const videoRefs = useRef<Record<number, HTMLVideoElement | null>>({});
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  // Subscribe to changes in Lite (Low Bandwidth) Mode
+  useEffect(() => {
+    const handleLiteModeChange = (e: any) => {
+      setIsLiteMode(e.detail);
+      if (e.detail) {
+        setIsPlaying(false);
+      }
+    };
+    window.addEventListener('campus-connect-lite-mode-change', handleLiteModeChange);
+    return () => window.removeEventListener('campus-connect-lite-mode-change', handleLiteModeChange);
+  }, []);
+
+  // When active reel index changes, keep paused if Low Bandwidth is enabled to save cellular data
+  useEffect(() => {
+    if (isLiteMode) {
+      setIsPlaying(false);
+    } else {
+      setIsPlaying(true);
+    }
+  }, [activeIndex, isLiteMode]);
+
+  // Programmatic playback toggle to manage active video streaming and preloading states
+  useEffect(() => {
+    Object.entries(videoRefs.current).forEach(([idxStr, videoEl]) => {
+      const idx = Number(idxStr);
+      if (videoEl) {
+        if (idx === activeIndex && isPlaying) {
+          videoEl.play().catch(() => {});
+        } else {
+          videoEl.pause();
+        }
+      }
+    });
+  }, [activeIndex, isPlaying, reels]);
+
+  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const container = e.currentTarget;
+    const scrollPosition = container.scrollTop;
+    const childHeight = container.clientHeight;
+    if (childHeight > 0) {
+      const index = Math.round(scrollPosition / childHeight);
+      if (index !== activeIndex && index >= 0 && index < reels.length) {
+        setActiveIndex(index);
+      }
+    }
+  };
+
+  useEffect(() => {
+    return reelUploader.subscribe((tasks) => {
+      setUploaderTasks(tasks);
+    });
+  }, []);
 
   // Custom Delete Reel confirmation modal state
   const [reelToDelete, setReelToDelete] = useState<any | null>(null);
@@ -112,7 +171,6 @@ export default function Reels() {
     e.preventDefault();
     if (!auth.currentUser || !newCaption.trim()) return;
 
-    setLoading(true);
     try {
       // Use device upload if present, otherwise external URL template
       const finalVideoUrl = selectedVideoBase64 || newVideoUrl.trim() || "https://assets.mixkit.co/videos/preview/mixkit-man-working-on-his-laptop-in-a-coffee-shop-42353-large.mp4";
@@ -120,22 +178,10 @@ export default function Reels() {
       const campusDomain = auth.currentUser.email?.split('@')[1];
       const campusCode = campusDomain ? campusDomain.split('.')[0].toUpperCase() : 'UNILAG';
 
-      await addDoc(collection(db, 'posts'), {
-        userId: auth.currentUser.uid,
-        userName: auth.currentUser.displayName || auth.currentUser.email?.split('@')[0],
-        userAvatar: auth.currentUser.photoURL || `https://api.dicebear.com/7.x/initials/svg?seed=${auth.currentUser.email}`,
-        content: newCaption,
-        mediaType: 'video',
-        videoUrl: finalVideoUrl,
-        likesCount: 0,
-        commentsCount: 0,
-        campus: campusCode,
-        createdAt: serverTimestamp()
-      });
+      // Push upload to fast asynchronous background manager
+      reelUploader.uploadReel(newCaption, finalVideoUrl, campusCode);
 
-      // Log real-time activity metrics
-      await logActivity(`Published a campus reel video: "${newCaption.slice(0, 30)}..."`);
-
+      // Instantly wipe inputs and close dialog so the user can continue navigating immediately!
       setNewCaption('');
       setNewVideoUrl('');
       setSelectedVideoBase64(null);
@@ -143,8 +189,6 @@ export default function Reels() {
       setShowAddModal(false);
     } catch (error) {
       console.error("Failed to post reel:", error);
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -272,6 +316,28 @@ export default function Reels() {
 
   return (
     <div className="h-[calc(100vh-12rem)] max-w-md mx-auto relative bg-slate-900 rounded-[2rem] overflow-hidden shadow-2xl">
+      {/* Floating background upload transfer monitor */}
+      {uploaderTasks.some(task => ['pending', 'uploading', 'completed', 'failed'].includes(task.status)) && (
+        <div className="absolute top-4 left-4 z-40 max-w-[200px] w-full space-y-1.5 pointer-events-auto">
+          {uploaderTasks.map(task => (
+            <div key={task.id} className="bg-slate-950/85 backdrop-blur-md border border-slate-800/80 p-2.5 rounded-2xl flex flex-col gap-1.5 shadow-xl text-white">
+              <div className="flex justify-between items-center text-[9px] font-black tracking-wider uppercase">
+                <span className="truncate max-w-[100px]">"{task.caption}"</span>
+                <span className={task.status === 'completed' ? 'text-emerald-400 font-bold' : task.status === 'failed' ? 'text-red-400 font-bold' : 'text-blue-400 font-bold animate-pulse'}>
+                  {task.status}
+                </span>
+              </div>
+              <div className="w-full bg-slate-800 rounded-full h-1 overflow-hidden">
+                <div 
+                  className={`h-full transition-all duration-300 ${task.status === 'completed' ? 'bg-emerald-500' : task.status === 'failed' ? 'bg-red-500' : 'bg-blue-500'}`}
+                  style={{ width: `${task.progress}%` }}
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       {reels.length === 0 ? (
         <div className="h-full w-full flex flex-col justify-center items-center text-center p-8 bg-slate-950 text-white italic-none">
           <div className="w-16 h-16 bg-blue-600/10 text-blue-500 rounded-3xl flex items-center justify-center mb-6 border border-blue-500/20">
@@ -289,17 +355,49 @@ export default function Reels() {
           </button>
         </div>
       ) : (
-        <div className="h-full overflow-y-scroll snap-y snap-mandatory scrollbar-hide">
+        <div 
+          ref={containerRef}
+          onScroll={handleScroll}
+          className="h-full overflow-y-scroll snap-y snap-mandatory scrollbar-hide"
+        >
           {reels.map((reel, i) => (
-            <div key={reel.id} className="h-full w-full snap-start relative italic-none">
+            <div key={reel.id} className="h-full w-full snap-start relative italic-none flex flex-col justify-between">
               <video
+                ref={el => { videoRefs.current[i] = el; }}
                 src={reel.videoUrl}
-                className="w-full h-full object-cover"
-                autoPlay={i === activeIndex && isPlaying}
+                className="w-full h-full object-cover absolute inset-0"
+                preload={i === activeIndex ? "auto" : "none"}
                 loop
                 muted
                 playsInline
               />
+
+              {/* Central click-to-play overlay container */}
+              <div 
+                onClick={() => setIsPlaying(!isPlaying)}
+                className="absolute inset-0 flex items-center justify-center cursor-pointer z-10"
+              >
+                <AnimatePresence>
+                  {!isPlaying && i === activeIndex && (
+                    <motion.div
+                      initial={{ opacity: 0, scale: 0.9 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.9 }}
+                      className="p-4 bg-slate-950/70 backdrop-blur-md rounded-2xl text-white shadow-2xl flex flex-col items-center gap-1 border border-white/10 select-none text-center max-w-[200px]"
+                    >
+                      <Play size={26} className="fill-white text-white translate-x-0.5" />
+                      <span className="text-[10px] font-black uppercase tracking-wider mt-1">
+                        {isLiteMode ? "Auto Stream Paused" : "Paused"}
+                      </span>
+                      {isLiteMode && (
+                        <p className="text-[8px] text-amber-400 font-semibold tracking-normal mt-0.5 leading-normal">
+                          Zap Mode Active: Click to buffer video
+                        </p>
+                      )}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
 
               {/* Overlay Gradient */}
               <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/30 pointer-events-none" />

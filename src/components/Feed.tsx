@@ -1,13 +1,14 @@
-import { useState, useEffect, useRef } from 'react';
-import { collection, query, orderBy, onSnapshot, addDoc, serverTimestamp, doc, updateDoc, increment, arrayUnion, arrayRemove, where, deleteDoc } from 'firebase/firestore';
-import { db, auth, handleFirestoreError, OperationType } from '../lib/firebase';
+import { useState, useEffect, useRef, useMemo } from 'react';
+import { collection, query, orderBy, addDoc, serverTimestamp, doc, updateDoc, increment, arrayUnion, arrayRemove, where, deleteDoc } from 'firebase/firestore';
+import { db, auth, handleFirestoreError, OperationType, onSnapshot } from '../lib/firebase';
 import { logActivity } from '../lib/activity';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'motion/react';
-import { Image, Send, Heart, MessageCircle, Share2, MoreHorizontal, CheckCircle2, X } from 'lucide-react';
+import { Image, Camera, Send, Heart, MessageCircle, Share2, MoreHorizontal, CheckCircle2, X, Zap, Wifi, WifiOff } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { VerificationBadge } from './VerificationBadge';
-import { cn } from '../lib/utils';
+import { cn, createMockMediaStream } from '../lib/utils';
+import TopStudents, { TopStudentItem } from './TopStudents';
 
 export default function Feed() {
   const navigate = useNavigate();
@@ -17,8 +18,22 @@ export default function Feed() {
   const [isVerified, setIsVerified] = useState(false);
   const [userProfile, setUserProfile] = useState<any>(null);
   const [activeTab, setActiveTab] = useState<'my-campus' | 'global'>('global');
-  const [usersMap, setUsersMap] = useState<Record<string, { email: string; verified: boolean }>>({});
+  const [usersMap, setUsersMap] = useState<Record<string, { email: string; verified: boolean; displayName?: string; avatarUrl?: string; campus?: string; online?: boolean }>>({});
   const [liveNotifications, setLiveNotifications] = useState<any[]>([]);
+
+  const [isLiteMode, setIsLiteMode] = useState(localStorage.getItem('campus_connect_lite_mode') === 'true');
+
+  useEffect(() => {
+    const handleLiteModeChange = (e: any) => {
+      setIsLiteMode(e.detail);
+    };
+    window.addEventListener('campus-connect-lite-mode-change', handleLiteModeChange);
+    return () => window.removeEventListener('campus-connect-lite-mode-change', handleLiteModeChange);
+  }, []);
+
+  // LocalStorage draft autosave states
+  const [isDraftLoaded, setIsDraftLoaded] = useState(false);
+  const [showDraftSavedIndicator, setShowDraftSavedIndicator] = useState(false);
 
   // WhatsApp-like ephemeral statuses (expire after 24 hrs)
   const [statusesList, setStatusesList] = useState<any[]>([]);
@@ -42,6 +57,10 @@ export default function Feed() {
   const [postToDelete, setPostToDelete] = useState<any | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  // Floating +1/Like and Heart pop animation states
+  const [popPostIds, setPopPostIds] = useState<Record<string, boolean>>({});
+  const [floatingPlusOnes, setFloatingPlusOnes] = useState<{ id: string; postId: string; isMinus?: boolean }[]>([]);
 
   // Direct Reply states
   const [expandedReplyPostId, setExpandedReplyPostId] = useState<string | null>(null);
@@ -112,6 +131,9 @@ export default function Feed() {
       setLiveNotifications(list);
     }, (error) => {
       console.error("Failed to subscribe to real-time feed notifications:", error);
+      try {
+        handleFirestoreError(error, OperationType.LIST, 'feed_notifications');
+      } catch (_) {}
     });
     return unsubscribe;
   }, [auth.currentUser]);
@@ -128,8 +150,84 @@ export default function Feed() {
   const [postImageBase64, setPostImageBase64] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Device Camera States
+  const [isCameraActive, setIsCameraActive] = useState(false);
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+
+  useEffect(() => {
+    let activeStream: MediaStream | null = null;
+    if (isCameraActive) {
+      navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false
+      })
+      .catch((err) => {
+        console.warn("Camera hardware access failed, falling back to virtual media source:", err);
+        return createMockMediaStream('video');
+      })
+      .then((stream) => {
+        activeStream = stream;
+        streamRef.current = stream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          videoRef.current.play().catch(e => console.warn("Video play info:", e));
+        }
+      });
+    }
+
+    return () => {
+      if (activeStream) {
+        activeStream.getTracks().forEach(track => track.stop());
+      }
+    };
+  }, [isCameraActive]);
+
+  const handleCapturePhoto = () => {
+    if (videoRef.current) {
+      const canvas = document.createElement('canvas');
+      canvas.width = videoRef.current.videoWidth || 640;
+      canvas.height = videoRef.current.videoHeight || 480;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+        setPostImageBase64(dataUrl);
+        setIsCameraActive(false);
+        setCameraError(null);
+      }
+    }
+  };
+
   // Active Expand Comments State (tracks expanded postId)
   const [expandedPostComments, setExpandedPostComments] = useState<{ [postId: string]: boolean }>({});
+
+  // Load draft once on currentUser resolution
+  useEffect(() => {
+    if (!auth.currentUser) return;
+    const storageKey = `campus_connect_draft_${auth.currentUser.uid}`;
+    const savedDraft = localStorage.getItem(storageKey);
+    if (savedDraft) {
+      setContent(savedDraft);
+    }
+    setIsDraftLoaded(true);
+  }, [auth.currentUser?.uid]);
+
+  // Autosave draft on content update ONLY AFTER drafting has loaded
+  useEffect(() => {
+    if (!auth.currentUser || !isDraftLoaded) return;
+    const storageKey = `campus_connect_draft_${auth.currentUser.uid}`;
+    if (content) {
+      localStorage.setItem(storageKey, content);
+      setShowDraftSavedIndicator(true);
+      const timer = setTimeout(() => setShowDraftSavedIndicator(false), 2000);
+      return () => clearTimeout(timer);
+    } else {
+      localStorage.removeItem(storageKey);
+      setShowDraftSavedIndicator(false);
+    }
+  }, [content, auth.currentUser?.uid, isDraftLoaded]);
 
   useEffect(() => {
     if (!auth.currentUser) return;
@@ -138,12 +236,16 @@ export default function Feed() {
     const unsubUsers = onSnapshot(
       collection(db, path), 
       (snapshot) => {
-        const map: Record<string, { email: string; verified: boolean }> = {};
+        const map: Record<string, { email: string; verified: boolean; displayName?: string; avatarUrl?: string; campus?: string; online?: boolean }> = {};
         snapshot.docs.forEach((doc) => {
           const data = doc.data();
           map[doc.id] = {
             email: data.email || '',
             verified: !!data.verified,
+            displayName: data.displayName || '',
+            avatarUrl: data.avatarUrl || '',
+            campus: data.campus || '',
+            online: !!data.online
           };
         });
         setUsersMap(map);
@@ -216,6 +318,9 @@ export default function Feed() {
       setStatusesList(allStatuses);
     }, (error) => {
       console.error("Failed to load statuses in real-time:", error);
+      try {
+        handleFirestoreError(error, OperationType.LIST, 'statuses');
+      } catch (_) {}
     });
 
     const postsPath = 'posts';
@@ -228,7 +333,9 @@ export default function Feed() {
         setLoading(false);
       },
       (error) => {
-        handleFirestoreError(error, OperationType.LIST, postsPath);
+        try {
+          handleFirestoreError(error, OperationType.LIST, postsPath);
+        } catch (_) {}
       }
     );
 
@@ -334,6 +441,19 @@ export default function Feed() {
     const postRef = doc(db, 'posts', postId);
     const userId = auth.currentUser.uid;
     const hasLiked = likedBy.includes(userId);
+
+    // Trigger scale pop animation
+    setPopPostIds(prev => ({ ...prev, [postId]: true }));
+    setTimeout(() => {
+      setPopPostIds(prev => ({ ...prev, [postId]: false }));
+    }, 450);
+
+    // Add a unique floating interaction count indicator (+1 or -1) near the heart icon
+    const animationId = Math.random().toString(36).substring(2, 9);
+    setFloatingPlusOnes(prev => [...prev, { id: animationId, postId, isMinus: hasLiked }]);
+    setTimeout(() => {
+      setFloatingPlusOnes(prev => prev.filter(item => item.id !== animationId));
+    }, 1000);
 
     try {
       if (hasLiked) {
@@ -475,13 +595,64 @@ export default function Feed() {
     groupedStatuses[sUserId].items.push(status);
   });
 
+  // Calculate top engagers in real-time based on active posts and user profiles
+  const topStudents = useMemo(() => {
+    const engagementMap: Record<string, TopStudentItem> = {};
+
+    posts.forEach(post => {
+      const uid = post.userId;
+      if (!uid) return;
+
+      const userMeta = usersMap[uid];
+      const name = userMeta?.displayName || post.userName || 'Anonymous Student';
+      const avatar = userMeta?.avatarUrl || post.userAvatar || `https://api.dicebear.com/7.x/initials/svg?seed=${uid}`;
+      const campus = userMeta?.campus || post.campus || 'CAMPUS';
+
+      // If active tab is my-campus, restrict to classmates on same campus
+      if (activeTab === 'my-campus') {
+        const myCampus = userProfile?.campus || '';
+        if (campus.toLowerCase() !== myCampus.toLowerCase()) return;
+      }
+
+      const likes = post.likesCount || 0;
+      const comments = post.commentsCount || 0;
+      const engagement = likes + comments;
+
+      if (!engagementMap[uid]) {
+        engagementMap[uid] = {
+          userId: uid,
+          userName: name,
+          userAvatar: avatar,
+          campus: campus,
+          totalLikes: 0,
+          totalComments: 0,
+          totalEngagement: 0,
+          postCount: 0
+        };
+      }
+
+      engagementMap[uid].totalLikes += likes;
+      engagementMap[uid].totalComments += comments;
+      engagementMap[uid].totalEngagement += engagement;
+      engagementMap[uid].postCount += 1;
+    });
+
+    return Object.values(engagementMap)
+      .filter(st => st.totalEngagement > 0)
+      .sort((a, b) => b.totalEngagement - a.totalEngagement || b.postCount - a.postCount)
+      .slice(0, 5);
+  }, [posts, usersMap, activeTab, userProfile]);
+
   return (
     <div 
       onTouchStart={handleTouchStart}
       onTouchMove={handleTouchMove}
       onTouchEnd={handleTouchEnd}
-      className="space-y-6 max-w-2xl mx-auto select-none"
+      className="max-w-5xl mx-auto select-none px-4 sm:px-6"
     >
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 items-start">
+        {/* Main Feed Content Column (2 columns on lg screen) */}
+        <div className="lg:col-span-2 space-y-6">
       {/* 📥 Pull-to-Refresh Indicator Banner */}
       {(pullY > 0 || isRefreshing) && (
         <motion.div
@@ -678,6 +849,20 @@ export default function Feed() {
                   <Image size={20} />
                 </button>
 
+                <button
+                  type="button"
+                  onClick={() => isVerified && setIsCameraActive(true)}
+                  disabled={!isVerified}
+                  className={`p-2.5 rounded-xl transition-colors ${
+                    isVerified 
+                      ? 'text-slate-500 hover:text-blue-600 hover:bg-blue-50' 
+                      : 'text-slate-350 cursor-not-allowed'
+                  }`}
+                  title="Take high-quality camera snap"
+                >
+                  <Camera size={20} />
+                </button>
+
                 {isVerified && (
                   <select
                     value={postVisibility}
@@ -689,6 +874,20 @@ export default function Feed() {
                     <option value="friends">👥 Friends Only Check</option>
                   </select>
                 )}
+
+                <AnimatePresence>
+                  {showDraftSavedIndicator && (
+                    <motion.div
+                      initial={{ opacity: 0, scale: 0.8, x: -5 }}
+                      animate={{ opacity: 1, scale: 1, x: 0 }}
+                      exit={{ opacity: 0, scale: 0.8 }}
+                      className="flex items-center gap-1.5 px-2.5 py-1.5 bg-emerald-50/70 border border-emerald-100/50 rounded-xl text-[9px] font-extrabold text-emerald-600 shadow-2xs select-none"
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+                      <span>Draft saved</span>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </div>
               <button
                 onClick={handlePost}
@@ -707,11 +906,48 @@ export default function Feed() {
         </div>
       </div>
 
+      {/* Top Social Champions on Mobile */}
+      <div className="block lg:hidden mt-2">
+        <TopStudents
+          topStudents={topStudents}
+          activeTab={activeTab}
+          currentUserUid={auth.currentUser?.uid}
+          usersMap={usersMap}
+          onMessageUser={(userId) => navigate(`/chat?userId=${userId}`)}
+        />
+      </div>
+
       {/* Feed Posts */}
       <div className="space-y-5">
         {loading ? (
           Array(3).fill(0).map((_, i) => (
-            <div key={i} className="h-48 bg-white border border-slate-200 rounded-3xl animate-pulse" />
+            <div key={i} className="bg-white border border-slate-100 rounded-[2rem] p-5 flex gap-4 animate-pulse">
+              {/* Avatar bone */}
+              <div className="w-11 h-11 bg-slate-200 rounded-full shrink-0" />
+              
+              {/* Content bones */}
+              <div className="flex-grow space-y-3">
+                {/* Header info */}
+                <div className="space-y-1.5">
+                  <div className="h-4 bg-slate-200 rounded-md w-1/4" />
+                  <div className="h-3 bg-slate-100 rounded-md w-1/6" />
+                </div>
+                
+                {/* Body paragraphs */}
+                <div className="space-y-2 pt-2">
+                  <div className="h-3.5 bg-slate-200 rounded-md w-full" />
+                  <div className="h-3.5 bg-slate-200 rounded-md w-[92%]" />
+                  <div className="h-3.5 bg-slate-100 rounded-md w-[65%]" />
+                </div>
+                
+                {/* Action buttons bar */}
+                <div className="flex gap-4 pt-3 border-t border-slate-50 mt-4">
+                  <div className="w-14 h-7 bg-slate-100 rounded-xl" />
+                  <div className="w-14 h-7 bg-slate-100 rounded-xl" />
+                  <div className="w-14 h-7 bg-slate-100 rounded-xl" />
+                </div>
+              </div>
+            </div>
           ))
         ) : filteredPosts.length === 0 ? (
           <div className="text-center py-16 bg-white border border-slate-200 rounded-[2rem] p-8">
@@ -877,15 +1113,10 @@ export default function Feed() {
 
                       {/* Render Post custom Base64 image */}
                       {post.mediaUrl && (
-                        <div className="mt-3 rounded-2xl overflow-hidden border border-slate-100 max-h-96 bg-slate-50">
-                          <img 
-                            src={post.mediaUrl} 
-                            className="w-full h-full object-cover hover:scale-101 transition-transform duration-300 cursor-zoom-in" 
-                            alt="Snap" 
-                            referrerPolicy="no-referrer"
-                            onClick={() => window.open(post.mediaUrl, '_blank')}
-                          />
-                        </div>
+                        <FeedImageLoader 
+                          url={post.mediaUrl} 
+                          isLiteMode={isLiteMode} 
+                        />
                       )}
 
                       {/* Interactive Actions Grid (LIKE, COMMENT, SHARE TO WHATSAPP ONLY as requested) */}
@@ -894,14 +1125,39 @@ export default function Feed() {
                           whileHover={{ scale: 1.15 }}
                           whileTap={{ scale: 0.85 }}
                           onClick={() => handleLike(post)}
-                          className="flex items-center gap-1.5 text-slate-500 hover:text-red-600 transition-all group focus:outline-none"
+                          className="flex items-center gap-1.5 text-slate-500 hover:text-red-600 transition-all group focus:outline-none relative"
                         >
-                          <Heart size={18} className={`transition-all duration-300 ${
-                            (post.likedBy || []).includes(auth.currentUser?.uid) 
-                              ? "fill-red-500 text-red-500 scale-110" 
-                              : ""
-                          }`} />
+                          <motion.div
+                            animate={popPostIds[post.id] ? { scale: [1, 1.45, 1] } : { scale: 1 }}
+                            transition={{ duration: 0.35, ease: "easeOut" }}
+                          >
+                            <Heart size={18} className={`transition-all duration-300 ${
+                              (post.likedBy || []).includes(auth.currentUser?.uid) 
+                                ? "fill-red-500 text-red-500 scale-110" 
+                                : ""
+                            }`} />
+                          </motion.div>
                           <span className="text-xs font-bold">{post.likesCount || 0}</span>
+
+                          {/* Floating indicators */}
+                          <AnimatePresence>
+                            {floatingPlusOnes
+                              .filter(item => item.postId === post.id)
+                              .map(item => (
+                                <motion.span
+                                  key={item.id}
+                                  initial={{ opacity: 0, y: 0, scale: 0.8 }}
+                                  animate={{ opacity: [0, 1, 1, 0], y: -24, scale: [0.8, 1.15, 1.15, 0.8], x: [0, -3, 3, 0] }}
+                                  exit={{ opacity: 0 }}
+                                  transition={{ duration: 0.8, ease: "easeOut" }}
+                                  className={`absolute -top-4 left-3 font-black text-[11px] pointer-events-none select-none drop-shadow-sm ${
+                                    item.isMinus ? "text-slate-500" : "text-red-500"
+                                  }`}
+                                >
+                                  {item.isMinus ? "-1" : "+1"}
+                                </motion.span>
+                              ))}
+                          </AnimatePresence>
                         </motion.button>
                         
                         <button 
@@ -1351,6 +1607,121 @@ export default function Feed() {
           </div>
         )}
       </AnimatePresence>
+
+      {/* CAMERA CAPTURE DIALOG / MODAL */}
+      <AnimatePresence>
+        {isCameraActive && (
+          <div className="fixed inset-0 z-[150] flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsCameraActive(false)}
+              className="absolute inset-0 bg-slate-950/70 backdrop-blur-sm"
+            />
+            
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 15 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 15 }}
+              className="bg-white max-w-xl w-full rounded-2xl border border-slate-200 overflow-hidden shadow-2xl relative z-10 text-slate-800"
+            >
+              <div className="p-6 border-b border-slate-100 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="p-2 bg-blue-50 text-blue-600 rounded-xl">
+                    <Camera size={18} />
+                  </div>
+                  <div>
+                    <h3 className="font-extrabold text-slate-900 text-sm">Capture Campus Snap</h3>
+                    <p className="text-slate-500 text-[10px]">Use your device camera to snap and publish an instant photo.</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsCameraActive(false)}
+                  className="p-1.5 hover:bg-slate-100 rounded-full transition-colors text-slate-400 hover:text-slate-600"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              {/* Viewfinder / Live Feed Area */}
+              <div className="bg-slate-950 aspect-video relative flex items-center justify-center overflow-hidden">
+                {cameraError ? (
+                  <div className="p-6 text-center text-red-400 space-y-2 max-w-xs">
+                    <p className="text-xs font-bold">⚠️ Camera Access Error</p>
+                    <p className="text-[11px] text-slate-400 leading-relaxed">{cameraError}</p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCameraError(null);
+                        // toggle off and on to restart stream detection
+                        setIsCameraActive(false);
+                        setTimeout(() => setIsCameraActive(true), 200);
+                      }}
+                      className="px-3 py-1.5 bg-slate-800 text-white rounded-lg text-[10px] font-bold hover:bg-slate-700 transition-colors"
+                    >
+                      Retry Permission Request
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <video
+                      ref={videoRef}
+                      autoPlay
+                      playsInline
+                      muted
+                      className="w-full h-full object-cover scale-x-[-1]"
+                    />
+                    {/* Viewfinder Target Reticle Overlay */}
+                    <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                      <div className="w-48 h-48 border-2 border-dashed border-white/20 rounded-full flex items-center justify-center">
+                        <div className="w-4 h-4 border border-white/30 rounded-full" />
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              <div className="p-6 bg-slate-50 flex gap-3 justify-end items-center">
+                <button
+                  type="button"
+                  onClick={() => setIsCameraActive(false)}
+                  className="px-4 py-2 bg-white border border-slate-200 text-slate-705 hover:bg-slate-100 rounded-xl text-xs font-bold transition-all active:scale-95 cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={!!cameraError}
+                  onClick={handleCapturePhoto}
+                  className={`px-5 py-2 rounded-xl font-bold flex items-center gap-2 text-xs transition-all ${
+                    !cameraError
+                      ? "bg-blue-600 text-white shadow-lg shadow-blue-200 hover:bg-blue-700 hover:-translate-y-0.5 active:scale-95 cursor-pointer"
+                      : "bg-slate-200 text-slate-400 cursor-not-allowed"
+                  }`}
+                >
+                  <Camera size={14} />
+                  Capture Photo
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+        </div> {/* End of lg:col-span-2 main feed column */}
+
+        {/* Desktop Sidebar Column */}
+        <div className="hidden lg:block space-y-6 sticky top-6">
+          <TopStudents
+            topStudents={topStudents}
+            activeTab={activeTab}
+            currentUserUid={auth.currentUser?.uid}
+            usersMap={usersMap}
+            onMessageUser={(userId) => navigate(`/chat?userId=${userId}`)}
+          />
+        </div>
+      </div> {/* End of dynamic responsive grid */}
     </div>
   );
 }
@@ -1421,7 +1792,20 @@ function PostCommentsSection({ postId, postRef, userProfile, usersMap, postOwner
     <div className="mt-4 pt-4 border-t border-slate-100 space-y-3">
       <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
         {loading ? (
-          <p className="text-[10px] text-slate-400 font-mono">Loading campus replies...</p>
+          <div className="space-y-2">
+            {Array(2).fill(0).map((_, i) => (
+              <div key={i} className="flex gap-2.5 items-start p-2 bg-slate-50/20 rounded-2xl border border-slate-100/40 animate-pulse">
+                <div className="w-7 h-7 bg-slate-200 rounded-lg shrink-0" />
+                <div className="flex-1 min-w-0 space-y-2 py-0.5">
+                  <div className="flex justify-between items-center">
+                    <div className="h-3 bg-slate-200 rounded-md w-1/4" />
+                    <div className="h-2.5 bg-slate-100 rounded-md w-12" />
+                  </div>
+                  <div className="h-2.5 bg-slate-150 rounded-md w-5/6" />
+                </div>
+              </div>
+            ))}
+          </div>
         ) : comments.length === 0 ? (
           <p className="text-[10px] text-slate-400 italic font-mono pl-1 py-1">No replies yet. Start the corridor chat!</p>
         ) : (
@@ -1469,6 +1853,55 @@ function PostCommentsSection({ postId, postRef, userProfile, usersMap, postOwner
           <Send size={12} />
         </button>
       </form>
+    </div>
+  );
+}
+
+// Network optimized Image Loader for poor connection environments
+function FeedImageLoader({ url, isLiteMode }: { url: string; isLiteMode: boolean }) {
+  const [reveal, setReveal] = useState(!isLiteMode);
+
+  useEffect(() => {
+    if (!isLiteMode) {
+      setReveal(true);
+    }
+  }, [isLiteMode]);
+
+  if (!reveal) {
+    return (
+      <div className="mt-3 rounded-2xl border border-amber-200/50 bg-amber-50/40 p-4 text-center flex flex-col items-center justify-center gap-2 select-none">
+        <div className="flex items-center gap-1.5 text-amber-800 text-xs font-bold uppercase tracking-wide">
+          <Zap size={14} className="text-amber-500 fill-amber-500" />
+          IMAGE SAVER ACTIVE
+        </div>
+        <p className="text-[11px] text-slate-500 leading-normal max-w-xs">
+          This post contains a heavy media upload. Click to buffer and load the image.
+        </p>
+        <button
+          type="button"
+          onClick={() => setReveal(true)}
+          className="mt-1 px-4 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer shadow-sm"
+        >
+          Load Image
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-3 rounded-2xl overflow-hidden border border-slate-100 max-h-96 bg-slate-50">
+      <img 
+        src={url} 
+        className="w-full h-full object-cover hover:scale-101 transition-transform duration-300 cursor-zoom-in" 
+        alt="Snap" 
+        loading="lazy"
+        referrerPolicy="no-referrer"
+        onClick={() => {
+          if (typeof window !== 'undefined') {
+            window.open(url, '_blank');
+          }
+        }}
+      />
     </div>
   );
 }

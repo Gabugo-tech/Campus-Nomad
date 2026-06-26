@@ -1,13 +1,14 @@
 import { useState, useEffect } from 'react';
 import { Outlet, NavLink, useLocation, useNavigate } from 'react-router-dom';
-import { Home, PlaySquare, MessageCircle, ShoppingBag, User, ShieldCheck, LogOut, AlertCircle, Search, PhoneOff, PhoneCall, X } from 'lucide-react';
-import { auth, db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { collection, query, onSnapshot, where, doc, updateDoc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { Home, PlaySquare, MessageCircle, ShoppingBag, User, ShieldCheck, LogOut, AlertCircle, Search, PhoneOff, PhoneCall, X, Wifi, WifiOff, Zap } from 'lucide-react';
+import { auth, db, handleFirestoreError, OperationType, onSnapshot } from '../lib/firebase';
+import { collection, query, where, doc, updateDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { User as FirebaseUser } from 'firebase/auth';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
 import { VerificationBadge } from './VerificationBadge';
 import { io } from 'socket.io-client';
+import { playNotificationSound } from '../lib/notificationSound';
 
 interface LayoutProps {
   user: FirebaseUser | null;
@@ -22,6 +23,43 @@ export default function Layout({ user, isVerified }: LayoutProps) {
   const [allUsers, setAllUsers] = useState<any[]>([]);
   const [showSearchResults, setShowSearchResults] = useState(false);
   const [missedCalls, setMissedCalls] = useState<any[]>([]);
+  const [globalNotifications, setGlobalNotifications] = useState<any[]>([]);
+  const [feedBadgeCount, setFeedBadgeCount] = useState(0);
+  const [chatBadgeCount, setChatBadgeCount] = useState(0);
+
+  const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
+  const [isLiteMode, setIsLiteMode] = useState(localStorage.getItem('campus_connect_lite_mode') === 'true');
+  const [showQuotaExceeded, setShowQuotaExceeded] = useState(false);
+
+  useEffect(() => {
+    const handleQuotaExceeded = () => {
+      setShowQuotaExceeded(true);
+    };
+    window.addEventListener('firestore-quota-exceeded', handleQuotaExceeded);
+    return () => {
+      window.removeEventListener('firestore-quota-exceeded', handleQuotaExceeded);
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  const toggleLiteMode = () => {
+    const newVal = !isLiteMode;
+    setIsLiteMode(newVal);
+    localStorage.setItem('campus_connect_lite_mode', newVal ? 'true' : 'false');
+    window.dispatchEvent(new CustomEvent('campus-connect-lite-mode-change', { detail: newVal }));
+  };
 
   // Dynamic Real-Time Online Status Tracking
   useEffect(() => {
@@ -117,8 +155,95 @@ export default function Layout({ user, isVerified }: LayoutProps) {
       const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setMissedCalls(list);
     }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, path);
+      try {
+        handleFirestoreError(error, OperationType.LIST, path);
+      } catch (_) {}
     });
+    return unsubscribe;
+  }, [user]);
+
+  // Sync unread notifications (likes, replies, comments, chat messages) in real-time
+  useEffect(() => {
+    if (!user) return;
+    const mountTime = Date.now();
+
+    const qNotifications = query(
+      collection(db, 'feed_notifications'),
+      where('receiverId', '==', user.uid),
+      where('seen', '==', false)
+    );
+
+    const unsubscribe = onSnapshot(qNotifications, (snapshot) => {
+      const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      
+      // Calculate active badges
+      const feedCount = list.filter((n: any) => n.type === 'like' || n.type === 'comment' || n.type === 'reply').length;
+      const chatCount = list.filter((n: any) => n.type === 'message').length;
+      
+      setFeedBadgeCount(feedCount);
+      setChatBadgeCount(chatCount);
+
+      // Distribute new toasts in real-time
+      snapshot.docChanges().forEach((change) => {
+        if (change.type === 'added') {
+          const docData = change.doc.data();
+          const docId = change.doc.id;
+
+          // Prevent old notifications from showing up on hard refresh
+          const docTime = docData.createdAt?.toDate ? docData.createdAt.toDate().getTime() : Date.now();
+          if (docTime >= mountTime - 15000 && docData.senderId !== user.uid) {
+            let titleText = 'Campus Activity';
+            let detailText = '';
+            
+            if (docData.type === 'like') {
+              titleText = '❤️ New Story Like';
+              detailText = `${docData.senderName} liked your post/reel`;
+            } else if (docData.type === 'comment') {
+              titleText = '💬 New Comment';
+              const text = docData.commentText || docData.postContent || '';
+              detailText = `${docData.senderName}: "${text.length > 35 ? text.substring(0, 35) + '...' : text}"`;
+            } else if (docData.type === 'message') {
+              if (window.location.pathname === '/chat') {
+                return; // suppress toast when actively talking inside Chat
+              }
+              titleText = '💬 New Chat Message';
+              const text = docData.postContent || '';
+              detailText = `${docData.senderName}: "${text.length > 35 ? text.substring(0, 35) + '...' : text}"`;
+            }
+
+            // Play the high-fidelity synthesized notification chime!
+            playNotificationSound();
+
+            const newToast = {
+              id: docId,
+              title: titleText,
+              description: detailText,
+              senderName: docData.senderName,
+              senderAvatar: docData.senderAvatar || `https://api.dicebear.com/7.x/initials/svg?seed=${docData.senderName}`,
+              type: docData.type,
+              postId: docData.postId || null,
+              createdAt: docTime
+            };
+
+            setGlobalNotifications(prev => {
+              if (prev.some(t => t.id === docId)) return prev;
+              return [newToast, ...prev];
+            });
+
+            // Auto-dismiss the toast after 6 seconds
+            setTimeout(() => {
+              setGlobalNotifications(prev => prev.filter(t => t.id !== docId));
+            }, 6000);
+          }
+        }
+      });
+    }, (error) => {
+      console.error("Failed to subscribe to global notifications in Layout:", error);
+      try {
+        handleFirestoreError(error, OperationType.LIST, 'feed_notifications');
+      } catch (_) {}
+    });
+
     return unsubscribe;
   }, [user]);
 
@@ -139,7 +264,9 @@ export default function Layout({ user, isVerified }: LayoutProps) {
       const list = snapshot.docs.map(doc => ({ uid: doc.id, ...doc.data() }));
       setAllUsers(list);
     }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, path);
+      try {
+        handleFirestoreError(error, OperationType.LIST, path);
+      } catch (_) {}
     });
     return unsubscribe;
   }, [user]);
@@ -157,7 +284,10 @@ export default function Layout({ user, isVerified }: LayoutProps) {
 
     const socketUrl = window.location.origin;
     const socket = io(socketUrl, {
-      transports: ['websocket', 'polling']
+      transports: ['websocket', 'polling'],
+      auth: {
+        token: (window as any).csrfToken || ''
+      }
     });
 
     socket.on('connect_error', (error) => {
@@ -227,9 +357,24 @@ export default function Layout({ user, isVerified }: LayoutProps) {
     <div className="min-h-screen bg-slate-50 flex flex-col md:flex-row">
       {/* Mobile Top Bar */}
       <div className="md:hidden sticky top-0 z-50 bg-white border-b border-slate-200 px-4 h-14 flex items-center justify-between">
-        <h1 className="text-xl font-bold bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">
-          Student-Nomad
-        </h1>
+        <div className="flex items-center gap-2">
+          <h1 className="text-xl font-bold bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">
+            Student-Nomad
+          </h1>
+          <button 
+            onClick={toggleLiteMode} 
+            className={`p-1.5 rounded-xl transition-all ${isLiteMode ? "bg-amber-50 text-amber-700 border border-amber-200/40" : "text-slate-400 hover:text-slate-600"}`}
+            title="Toggle Low Bandwidth Mode"
+          >
+            <Zap size={14} className={isLiteMode ? "fill-amber-600 text-amber-600" : ""} />
+          </button>
+          {!isOnline && (
+            <span className="p-1 px-1.5 bg-rose-50 border border-rose-100 rounded-lg text-[9px] font-black text-rose-600 flex items-center gap-1 animate-pulse">
+              <WifiOff size={10} />
+              Offline
+            </span>
+          )}
+        </div>
         {user && !isVerified && location.pathname !== '/verify' && (
           <NavLink to="/verify" className="flex items-center gap-1 text-xs font-medium text-orange-600 bg-orange-50 px-2 py-1 rounded-full animate-pulse border border-orange-200">
             Verify Now
@@ -318,11 +463,64 @@ export default function Layout({ user, isVerified }: LayoutProps) {
                 )
               }
             >
-              <item.icon size={22} />
-              <span>{item.label}</span>
+              <div className="relative">
+                <item.icon size={22} />
+                {item.path === '/feed' && feedBadgeCount > 0 && (
+                  <span className="absolute -top-2.5 -right-2.5 flex h-5 w-5 items-center justify-center rounded-full bg-red-500 text-[9px] font-black text-white ring-2 ring-white animate-pulse">
+                    {feedBadgeCount}
+                  </span>
+                )}
+                {item.path === '/chat' && chatBadgeCount > 0 && (
+                  <span className="absolute -top-2.5 -right-2.5 flex h-5 w-5 items-center justify-center rounded-full bg-blue-600 text-[9px] font-black text-white ring-2 ring-white animate-pulse">
+                    {chatBadgeCount}
+                  </span>
+                )}
+              </div>
+              <span className="flex-1 text-left">{item.label}</span>
             </NavLink>
           ))}
         </nav>
+        
+        <div className="px-4 py-2 border-t border-slate-100 flex flex-col gap-2">
+          {/* Network Connection Status */}
+          <div className="flex items-center justify-between text-[11px] font-medium text-slate-500 px-2 py-1 bg-slate-50 rounded-lg">
+            <span className="flex items-center gap-1.5">
+              {isOnline ? (
+                <>
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                  Online
+                </>
+              ) : (
+                <>
+                  <span className="w-2 h-2 rounded-full bg-rose-500" />
+                  Offline Mode
+                </>
+              )}
+            </span>
+            <span className="font-mono text-[9px] uppercase font-bold text-slate-400">
+              {isOnline ? "Sync Ready" : "Cached DB"}
+            </span>
+          </div>
+
+          {/* Lite Mode Toggle */}
+          <button
+            onClick={toggleLiteMode}
+            className={`flex items-center justify-between w-full p-2 rounded-xl transition-all font-sans text-xs ${
+              isLiteMode 
+                ? "bg-amber-50 text-amber-700 border border-amber-200/50" 
+                : "text-slate-600 hover:bg-slate-50 border border-transparent"
+            }`}
+          >
+            <span className="flex items-center gap-2 font-bold select-none text-[10px] uppercase tracking-wider">
+              <Zap size={14} className={isLiteMode ? "text-amber-500 fill-amber-500" : ""} />
+              {isLiteMode ? "Saver Mode Active" : "Low Bandwidth"}
+            </span>
+            <div className={`relative w-7 h-4 rounded-full transition-colors ${isLiteMode ? 'bg-amber-500' : 'bg-slate-200 border border-slate-300'}`}>
+              <div className={`absolute top-0.5 left-0.5 w-2.5 h-2.5 rounded-full bg-white transition-all shadow-sm ${isLiteMode ? 'translate-x-3' : 'translate-x-0'}`} />
+            </div>
+          </button>
+        </div>
+
         <div className="p-4 border-t border-slate-100">
           <button
             onClick={() => setShowSignOutModal(true)}
@@ -355,12 +553,24 @@ export default function Layout({ user, isVerified }: LayoutProps) {
             to={item.path}
             className={({ isActive }) =>
               cn(
-                "p-2 rounded-xl transition-all",
+                "p-2 rounded-xl transition-all relative",
                 isActive ? "text-blue-600 bg-blue-50/50" : "text-slate-500"
               )
             }
           >
-            <item.icon size={24} />
+            <div className="relative">
+              <item.icon size={24} />
+              {item.path === '/feed' && feedBadgeCount > 0 && (
+                <span className="absolute -top-1.5 -right-1.5 flex h-4.5 w-4.5 items-center justify-center rounded-full bg-red-500 text-[9px] font-black text-white ring-2 ring-white animate-pulse">
+                  {feedBadgeCount}
+                </span>
+              )}
+              {item.path === '/chat' && chatBadgeCount > 0 && (
+                <span className="absolute -top-1.5 -right-1.5 flex h-4.5 w-4.5 items-center justify-center rounded-full bg-blue-600 text-[9px] font-black text-white ring-2 ring-white animate-pulse">
+                  {chatBadgeCount}
+                </span>
+              )}
+            </div>
           </NavLink>
         ))}
       </nav>
@@ -427,6 +637,146 @@ export default function Layout({ user, isVerified }: LayoutProps) {
           </div>
         )}
       </AnimatePresence>
+
+      {/* Firestore Quota Exceeded Informational Dialog */}
+      <AnimatePresence>
+        {showQuotaExceeded && (
+          <div className="fixed inset-0 z-[120] flex items-center justify-center p-4">
+            {/* Backdrop */}
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowQuotaExceeded(false)}
+              className="absolute inset-0 bg-slate-900/75 backdrop-blur-sm"
+            />
+            
+            {/* Modal Card */}
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 16 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 16 }}
+              className="bg-white max-w-md w-full rounded-[2.2rem] border border-amber-200 p-6 md:p-8 shadow-2xl relative z-10 text-center"
+            >
+              <div className="mx-auto w-14 h-14 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center mb-5 border border-amber-200/50">
+                <Zap size={28} className="fill-amber-500 text-amber-500 animate-pulse" />
+              </div>
+              
+              <h3 className="text-2xl font-black text-slate-900 mb-2 tracking-tight">Firestore Quota Reached</h3>
+              <p className="text-xs font-mono font-bold uppercase tracking-wider text-amber-700 bg-amber-50 px-2.5 py-1 rounded-full inline-block mb-4">
+                Spark Free Plan Limit
+              </p>
+              
+              <div className="text-slate-600 text-sm mb-6 space-y-3 text-left bg-slate-50 p-4 rounded-2xl border border-slate-100">
+                <p className="leading-relaxed">
+                  The daily read/write quota for the application's Firebase database has been exceeded. Programmatic database synchronization is temporarily paused.
+                </p>
+                <p className="leading-relaxed text-xs">
+                  • <strong>Daily Reset:</strong> Quotas reset daily at midnight Pacific Time.
+                </p>
+                <p className="leading-relaxed text-xs">
+                  • <strong>Details:</strong> Detailed quota information can be found under the <strong>Spark Plan</strong> column in the <strong>Enterprise Edition</strong> section of the <a href="https://firebase.google.com/pricing#cloud-firestore" target="_blank" rel="noreferrer" className="text-blue-600 hover:underline font-semibold">Firestore Pricing Page</a>.
+                </p>
+              </div>
+              
+              <div className="flex flex-col gap-3">
+                <a
+                  href="https://console.firebase.google.com/project/gen-lang-client-0036951224/firestore/databases/ai-studio-a816fe72-4c23-410e-a34a-ce4eb1f0f56d/data?openUpgradeDialog=true"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="w-full py-3 px-4 bg-amber-600 text-white rounded-xl text-sm font-bold hover:bg-amber-700 transition-all active:scale-95 shadow-lg shadow-amber-100 text-center inline-block cursor-pointer font-sans"
+                >
+                  🚀 Upgrade Database / Manage Project
+                </a>
+                
+                <button
+                  onClick={() => setShowQuotaExceeded(false)}
+                  className="w-full py-3 bg-slate-100 text-slate-700 rounded-xl text-sm font-bold hover:bg-slate-200 transition-all active:scale-95"
+                >
+                  Continue in Cached Offline Mode
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Real-Time Global Toast Notifications */}
+      <div className="fixed top-4 right-4 z-[9999] p-4 flex flex-col gap-3 min-w-[320px] max-w-sm w-full pointer-events-none">
+        <AnimatePresence>
+          {globalNotifications.map((notif) => (
+            <motion.div
+              key={notif.id}
+              initial={{ opacity: 0, scale: 0.9, x: 50 }}
+              animate={{ opacity: 1, scale: 1, x: 0 }}
+              exit={{ opacity: 0, scale: 0.9, x: 50, transition: { duration: 0.2 } }}
+              onClick={async () => {
+                // Mark as read in Firestore
+                try {
+                  await updateDoc(doc(db, 'feed_notifications', notif.id), { seen: true });
+                } catch (err) {
+                  console.error("Failed to mark notification as seen:", err);
+                }
+                
+                // Route navigation
+                if (notif.type === 'message') {
+                  navigate('/chat');
+                } else if (notif.type === 'like' || notif.type === 'comment') {
+                  navigate('/feed');
+                }
+                
+                // Clear state toast
+                setGlobalNotifications(prev => prev.filter(t => t.id !== notif.id));
+              }}
+              className="pointer-events-auto cursor-pointer bg-white border border-slate-200/90 rounded-[1.5rem] p-4 shadow-2xl flex items-start gap-3 relative overflow-hidden group hover:shadow-3xl hover:border-slate-300 transition-all active:scale-98"
+            >
+              {/* Sliding brand bar indicator */}
+              <div className={cn(
+                "absolute top-0 bottom-0 left-0 w-2",
+                notif.type === 'message' ? "bg-blue-600" : "bg-red-500"
+              )} />
+              
+              <img
+                src={notif.senderAvatar}
+                className="w-9 h-9 rounded-full object-cover shrink-0 border border-slate-100"
+                alt=""
+                referrerPolicy="no-referrer"
+              />
+              
+              <div className="flex-1 min-w-0 text-left">
+                <span className={cn(
+                  "text-[9px] font-mono font-black uppercase tracking-widest block mb-0.5",
+                  notif.type === 'message' ? "text-blue-500" : "text-red-500"
+                )}>
+                  {notif.type === 'message' ? '⚡ New Inbox Msg' : '✨ New Interaction'}
+                </span>
+                <h4 className="font-bold text-xs text-slate-800 truncate">
+                  {notif.title}
+                </h4>
+                <p className="text-[11px] text-slate-500 mt-0.5 leading-normal font-medium">
+                  {notif.description}
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  try {
+                    await updateDoc(doc(db, 'feed_notifications', notif.id), { seen: true });
+                  } catch (err) {
+                    console.error("Failed to dismiss notifications:", err);
+                  }
+                  setGlobalNotifications(prev => prev.filter(t => t.id !== notif.id));
+                }}
+                className="p-1 hover:bg-slate-50 rounded-lg text-slate-300 hover:text-slate-500 shrink-0 self-center"
+              >
+                <X size={15} />
+              </button>
+            </motion.div>
+          ))}
+        </AnimatePresence>
+      </div>
 
       {/* Toast Notification Container for Missed Calls */}
       <div className="fixed bottom-4 right-4 z-[9999] p-4 flex flex-col gap-3 min-w-[325px] max-w-sm pointer-events-none">
@@ -518,7 +868,12 @@ export default function Layout({ user, isVerified }: LayoutProps) {
                 <button
                   onClick={() => {
                     const socketUrl = window.location.origin;
-                    const socket = io(socketUrl, { transports: ['websocket', 'polling'] });
+                    const socket = io(socketUrl, {
+                      transports: ['websocket', 'polling'],
+                      auth: {
+                        token: (window as any).csrfToken || ''
+                      }
+                    });
                     socket.emit('reject-call', {
                       callerId: backgroundIncomingCall.callerId,
                       receiverId: user?.uid

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
-import { db, auth, handleFirestoreError, OperationType } from '../lib/firebase';
-import { collection, addDoc, serverTimestamp, doc, onSnapshot, updateDoc } from 'firebase/firestore';
+import { db, auth, handleFirestoreError, OperationType, onSnapshot } from '../lib/firebase';
+import { collection, addDoc, serverTimestamp, doc, updateDoc } from 'firebase/firestore';
 import { motion } from 'motion/react';
 import { ShieldCheck, Upload, Camera, CheckCircle2, AlertCircle, Loader2, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';

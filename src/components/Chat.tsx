@@ -1,21 +1,115 @@
 import { useState, useEffect, useRef } from 'react';
-import { db, auth, handleFirestoreError, OperationType } from '../lib/firebase';
-import { collection, query, orderBy, onSnapshot, addDoc, serverTimestamp, limit, doc, where, getDocs, updateDoc, deleteDoc } from 'firebase/firestore';
+import { db, auth, handleFirestoreError, OperationType, onSnapshot } from '../lib/firebase';
+import { collection, query, orderBy, addDoc, serverTimestamp, limit, doc, where, getDocs, updateDoc, deleteDoc } from 'firebase/firestore';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'motion/react';
-import { Send, Image, Search, Info, Phone, Video, Users, CheckCheck, Check, Ban, MoreVertical, Globe, X, ExternalLink, UserPlus, PhoneOff, PhoneCall, Volume2, Camera, CameraOff, VolumeX, ArrowLeft, Lock, Heart, Bell, MessageCircle, AlertTriangle, Loader2, Mic, MicOff, Calendar, Clock } from 'lucide-react';
+import { Send, Image, Search, Info, Phone, Video, Users, CheckCheck, Check, Ban, MoreVertical, Globe, X, ExternalLink, UserPlus, PhoneOff, PhoneCall, Volume2, Camera, CameraOff, VolumeX, ArrowLeft, Lock, Heart, Bell, MessageCircle, AlertTriangle, Loader2, Mic, MicOff, Calendar, Clock, Eye, EyeOff, Trash2, Smile } from 'lucide-react';
 import { io, Socket } from 'socket.io-client';
 import { format, formatDistanceToNow } from 'date-fns';
 import { logActivity } from '../lib/activity';
 import { VerificationBadge } from './VerificationBadge';
 import { encryptText, decryptText } from '../lib/crypto';
+import { createMockMediaStream } from '../lib/utils';
 import CallInterface from './CallInterface';
+
+function OneTimeMessage({ msg, isMe, activeChat, currentTime }: { msg: any; isMe: boolean; activeChat: string; currentTime: number }) {
+  const openedTime = msg.openedAt ? new Date(msg.openedAt).getTime() : null;
+  const elapsed = openedTime ? Math.max(0, currentTime - openedTime) : 0;
+  const timeLeft = Math.max(0, 15 - Math.floor(elapsed / 1000));
+
+  useEffect(() => {
+    if (msg.isOneTimeOpened && timeLeft === 0) {
+      deleteDoc(doc(db, 'chats', activeChat, 'messages', msg.id)).catch(err => {
+        console.error("Error deleting self-destructing message:", err);
+      });
+    }
+  }, [timeLeft, msg.isOneTimeOpened, activeChat, msg.id]);
+
+  const handleRevealOneTime = async () => {
+    try {
+      await updateDoc(doc(db, 'chats', activeChat, 'messages', msg.id), {
+        isOneTimeOpened: true,
+        openedAt: new Date().toISOString()
+      });
+    } catch (err) {
+      console.error("Failed to reveal one-time message:", err);
+    }
+  };
+
+  if (!msg.isOneTimeOpened) {
+    if (isMe) {
+      return (
+        <div className="p-3 text-slate-400 dark:text-slate-500 italic max-w-sm">
+          <div className="flex items-center gap-1.5 text-xs font-bold font-sans">
+            <Lock size={12} className="text-slate-400" />
+            Sent a one-time message
+          </div>
+          <p className="text-[9px] mt-0.5 text-slate-350">Unopened by receiver.</p>
+        </div>
+      );
+    } else {
+      return (
+        <div className="p-3.5 flex flex-col items-center justify-center text-center gap-2 min-w-[220px] bg-slate-50 dark:bg-slate-900/50 rounded-2xl border border-slate-100 dark:border-slate-800">
+          <Lock size={16} className="text-pink-500 animate-pulse" />
+          <span className="font-extrabold text-[10px] text-slate-800 dark:text-slate-200 uppercase tracking-widest leading-none">One-Time Message</span>
+          <p className="text-[10px] text-slate-500 max-w-[180px] leading-tight font-sans">This message will be permanently deleted 15 seconds after opening.</p>
+          <button
+            onClick={handleRevealOneTime}
+            className="mt-1 px-4 py-1.5 bg-gradient-to-r from-pink-600 to-rose-600 hover:from-pink-700 hover:to-rose-700 text-white font-black text-[9px] uppercase tracking-widest rounded-xl transition-all shadow-md active:scale-95 cursor-pointer flex items-center gap-1.5"
+          >
+            <Eye size={10} />
+            Reveal Content
+          </button>
+        </div>
+      );
+    }
+  }
+
+  if (timeLeft === 0) {
+    return (
+      <div className="p-3 text-rose-500 dark:text-rose-400 italic flex items-center gap-1.5 text-xs font-bold font-sans">
+        <AlertTriangle size={12} className="text-rose-500 animate-bounce" />
+        Message destroyed permanently
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-2.5">
+      <div className="flex items-center gap-1.5 text-[10px] font-black text-rose-600 dark:text-rose-400 uppercase tracking-widest mb-2 border-b border-rose-100 dark:border-rose-950 pb-1 animate-pulse">
+        <Clock size={11} className="animate-spin" />
+        Destroying in {timeLeft}s
+      </div>
+      {msg.imageUrl && (
+        <div className="rounded-xl overflow-hidden mb-1.5 max-w-sm max-h-60 border border-slate-100 dark:border-slate-800 bg-black/5">
+          <img 
+            src={msg.imageUrl} 
+            className="w-full h-full object-cover cursor-zoom-in" 
+            alt="One-time attachment" 
+            referrerPolicy="no-referrer"
+            onClick={() => window.open(msg.imageUrl, '_blank')}
+          />
+        </div>
+      )}
+      {msg.text && (
+        <div className="leading-relaxed whitespace-pre-wrap flex items-start justify-between gap-1.5 text-inherit">
+          <span>{msg.isEncrypted ? decryptText(msg.text, activeChat) : msg.text}</span>
+          {msg.isEncrypted && (
+            <Lock size={12} className="inline-block text-emerald-500 shrink-0 mt-1" title="Encrypted" />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function Chat() {
   const navigate = useNavigate();
   const [messages, setMessages] = useState<any[]>([]);
   const [inputText, setInputText] = useState('');
   const [activeChat, setActiveChat] = useState<string>('');
+  const [messageLimit, setMessageLimit] = useState(35);
+  const isLoadMoreRef = useRef(false);
   const [selectedReceiver, setSelectedReceiver] = useState<any | null>(null);
   const [students, setStudents] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -33,11 +127,25 @@ export default function Chat() {
   const [cameraOff, setCameraOff] = useState(false);
   const [callStartTime, setCallStartTime] = useState<number | null>(null);
   const [ping, setPing] = useState<number | null>(null);
+  const [packetsLost, setPacketsLost] = useState<number | null>(null);
+  const [jitter, setJitter] = useState<number | null>(null);
   const [showReportModal, setShowReportModal] = useState(false);
   const [reportReason, setReportReason] = useState("");
   const [isSubmittingReport, setIsSubmittingReport] = useState(false);
   const [isListening, setIsListening] = useState(false);
+  const [isOneTimeMode, setIsOneTimeMode] = useState(false);
+  const [isRecordingAudio, setIsRecordingAudio] = useState(false);
+  const [recordingTimer, setRecordingTimer] = useState(0);
+  const [currentTime, setCurrentTime] = useState(Date.now());
+  const [activeReactionsMessageId, setActiveReactionsMessageId] = useState<string | null>(null);
   const recognitionRef = useRef<any>(null);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentTime(Date.now());
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   // Friends & Navigation Directory tabs
   const [sidebarTab, setSidebarTab] = useState<'chats' | 'friends' | 'calls'>('chats');
@@ -144,6 +252,26 @@ export default function Chat() {
     return unsubscribe;
   }, [auth.currentUser]);
 
+  // Track unread direct message notifications from each student in real-time
+  const [unseenMessageNotifications, setUnseenMessageNotifications] = useState<any[]>([]);
+
+  useEffect(() => {
+    if (!auth.currentUser) return;
+    const qUnseen = query(
+      collection(db, 'feed_notifications'),
+      where('receiverId', '==', auth.currentUser.uid),
+      where('seen', '==', false),
+      where('type', '==', 'message')
+    );
+    const unsubscribe = onSnapshot(qUnseen, (snapshot) => {
+      const docs = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+      setUnseenMessageNotifications(docs);
+    }, (error) => {
+      console.error("Failed to sync unseen message notifications inside Chat:", error);
+    });
+    return unsubscribe;
+  }, [auth.currentUser]);
+
   // WebRTC Sandbox MediaStream state for local video preview
   const [localStream, _setLocalStream] = useState<MediaStream | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
@@ -172,6 +300,12 @@ export default function Chat() {
   // Image sharing states
   const [selectedImageBase64, setSelectedImageBase64] = useState<string | null>(null);
   const chatFileInputRef = useRef<HTMLInputElement>(null);
+
+  // Audio sharing states and refs
+  const [selectedAudioBase64, setSelectedAudioBase64] = useState<string | null>(null);
+  const audioRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const recordingTimerIntervalRef = useRef<any>(null);
 
   const socketRef = useRef<Socket | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -265,6 +399,8 @@ export default function Chat() {
 
   useEffect(() => {
     activeChatRef.current = activeChat;
+    setMessageLimit(35);
+    isLoadMoreRef.current = false;
   }, [activeChat]);
 
   // Real-time listener for registered users
@@ -373,7 +509,10 @@ export default function Chat() {
       reconnectionAttempts: Infinity,
       reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,
-      timeout: 20000
+      timeout: 20000,
+      auth: {
+        token: (window as any).csrfToken || ''
+      }
     });
     socketRef.current = socket;
 
@@ -488,6 +627,10 @@ export default function Chat() {
 
       // Initiate local camera/mic stream
       navigator.mediaDevices.getUserMedia({ video: data.callType === 'video' || callType === 'video', audio: true })
+        .catch(err => {
+          console.warn("Camera/microphone streaming sandboxed or rejected, using virtual stream:", err);
+          return createMockMediaStream((data.callType === 'video' || callType === 'video') ? 'video' : 'voice');
+        })
         .then(stream => {
           setLocalStream(stream);
           if (localVideoRef.current) {
@@ -497,8 +640,7 @@ export default function Chat() {
           if (otherId) {
             initWebRTCPeerConnection(stream, otherId, true);
           }
-        })
-        .catch(err => console.warn("Camera/microphone streaming sandboxed or rejected:", err));
+        });
     });
 
     socket.on('call-timestamp-sync', (data) => {
@@ -644,14 +786,17 @@ export default function Chat() {
 
       // Fetch dynamic streaming instantly
       navigator.mediaDevices.getUserMedia({ video: incomingCallType === 'video', audio: true })
+        .catch(err => {
+          console.warn("Camera streaming error on autoAccept, using virtual source:", err);
+          return createMockMediaStream(incomingCallType);
+        })
         .then(stream => {
           setLocalStream(stream);
           if (localVideoRef.current) {
             localVideoRef.current.srcObject = stream;
           }
           initWebRTCPeerConnection(stream, cid, true);
-        })
-        .catch(err => console.warn("Camera streaming error on autoAccept:", err));
+        });
 
       // Clean query params from URL gracefully
       window.history.replaceState({}, document.title, window.location.pathname);
@@ -675,7 +820,7 @@ export default function Chat() {
     return () => clearInterval(timerInterval);
   }, [callState, callStartTime]);
 
-  // Monitor active session stats and latency (ping)
+  // Monitor active session stats and latency (ping/packet_loss/jitter)
   useEffect(() => {
     let pingInterval: any;
     if (callState === 'active') {
@@ -684,14 +829,30 @@ export default function Chat() {
         if (pc) {
           try {
             const stats = await pc.getStats();
+            let currentPing = null;
+            let currentPacketsLost = null;
+            let currentJitter = null;
+
             stats.forEach(report => {
               if (report.type === 'candidate-pair' && report.state === 'succeeded') {
                 const rtt = report.currentRoundTripTime;
                 if (rtt !== undefined) {
-                  setPing(Math.round(rtt * 1000));
+                  currentPing = Math.round(rtt * 1000);
+                }
+              }
+              if (report.type === 'inbound-rtp') {
+                if (report.packetsLost !== undefined) {
+                  currentPacketsLost = report.packetsLost;
+                }
+                if (report.jitter !== undefined) {
+                  currentJitter = Math.round(report.jitter * 1000); // convert to ms
                 }
               }
             });
+
+            setPing(currentPing);
+            setPacketsLost(currentPacketsLost);
+            setJitter(currentJitter);
           } catch (err) {
             console.warn("Could not query RTCPeerConnection stats:", err);
           }
@@ -699,6 +860,8 @@ export default function Chat() {
       }, 2000);
     } else {
       setPing(null);
+      setPacketsLost(null);
+      setJitter(null);
     }
     return () => clearInterval(pingInterval);
   }, [callState]);
@@ -895,18 +1058,8 @@ export default function Chat() {
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       return stream;
     } catch (err: any) {
-      console.error("Camera/Mic Media permission error:", err);
-      let errMsg = "Microphone or Camera permission was denied, or is not supported by your sandboxed browser.";
-      
-      const isSafariOrIOS = /iPad|iPhone|iPod|Macintosh/.test(navigator.userAgent) || (navigator.maxTouchPoints && navigator.maxTouchPoints > 1);
-      if (isSafariOrIOS) {
-        errMsg += "\n\n💡 Safari/iOS Troubleshooting:\nGo to Settings -> Safari -> Camera (and Microphone), change access to 'Allow', then refresh this tab to apply.";
-      } else {
-        errMsg += "\n\n💡 Troubleshooting Hint:\nPlease click the media lock/camera icon in your address bar, click 'Allow' or reset permissions, and refresh the browser tab.";
-      }
-      
-      alert(errMsg);
-      throw err;
+      console.warn("Camera/microphone hardware access failed, falling back to virtual media source:", err);
+      return createMockMediaStream(type);
     }
   };
 
@@ -999,8 +1152,15 @@ export default function Chat() {
         stream.getVideoTracks()[0].onended = () => {
           stopScreenShare();
         };
-      } catch (err) {
+      } catch (err: any) {
         console.error("Failed to share screen:", err);
+        let errorMsg = "Could not activate screen sharing.";
+        if (err.name === 'NotAllowedError' || err.message?.includes('permissions policy')) {
+          errorMsg = "Screen sharing is blocked in this sandboxed frame. For the full collaborative video & screen sharing experience, please click the 'Open in New Tab' icon at the top right of your screen!";
+        } else {
+          errorMsg += ` Detail: ${err.message || err}`;
+        }
+        alert(errorMsg);
       }
     } else {
       stopScreenShare();
@@ -1237,19 +1397,35 @@ export default function Chat() {
     }
 
     const messagesPath = `chats/${activeChat}/messages`;
-    // Subscribe to Firestore changes for current active chat
+    // Subscribe to Firestore changes for current active chat with limit
     const q = query(
       collection(db, 'chats', activeChat, 'messages'),
-      orderBy('createdAt', 'asc'),
-      limit(100)
+      orderBy('createdAt', 'desc'),
+      limit(messageLimit)
     );
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const msgs = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data(),
-        createdAt: doc.data().createdAt && typeof doc.data().createdAt.toDate === 'function' ? doc.data().createdAt.toDate() : new Date()
-      }));
+      let msgs = snapshot.docs.map(doc => {
+        const data = doc.data();
+        let dateVal = new Date();
+        if (data.createdAt) {
+          if (typeof data.createdAt.toDate === 'function') {
+            dateVal = data.createdAt.toDate();
+          } else if (typeof data.createdAt === 'string') {
+            dateVal = new Date(data.createdAt);
+          } else if (data.createdAt instanceof Date) {
+            dateVal = data.createdAt;
+          }
+        }
+        return {
+          id: doc.id,
+          ...data,
+          createdAt: dateVal
+        };
+      });
+
+      // Maintain oldest-to-newest representation on client side
+      msgs.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
       setMessages(msgs);
 
       // Instantly mark opponent's incoming messages as seen in real-time
@@ -1259,7 +1435,37 @@ export default function Chat() {
           updateDoc(d.ref, { seen: true })
             .catch(err => console.error("Error updating seen state:", err));
         }
+
+        // Auto-delete one-time messages after 15 seconds once opened
+        if (data.isOneTime && data.isOneTimeOpened) {
+          const openedAtStr = data.openedAt;
+          if (openedAtStr) {
+            const openedTime = new Date(openedAtStr).getTime();
+            const age = Date.now() - openedTime;
+            if (age > 15000) {
+              deleteDoc(d.ref).catch(err => console.error("Error auto-deleting opened one-time message:", err));
+            }
+          } else {
+            deleteDoc(d.ref).catch(err => console.error("Error deleting opened one-time message with missing openedAt:", err));
+          }
+        }
       });
+
+      // Clear matching unread global message notifications in feed_notifications
+      if (auth.currentUser) {
+        const qNotif = query(
+          collection(db, 'feed_notifications'),
+          where('postId', '==', activeChat),
+          where('receiverId', '==', auth.currentUser.uid),
+          where('seen', '==', false)
+        );
+        getDocs(qNotif).then((notifSnap) => {
+          notifSnap.docs.forEach((notifDoc) => {
+            updateDoc(notifDoc.ref, { seen: true })
+              .catch(err => console.error("Error clearing feed notification:", err));
+          });
+        }).catch(err => console.warn("Failed to clean matched notifications:", err));
+      }
     }, (error) => {
       handleFirestoreError(error, OperationType.LIST, messagesPath);
     });
@@ -1267,9 +1473,13 @@ export default function Chat() {
     return () => {
       unsubscribe();
     };
-  }, [activeChat, auth.currentUser]);
+  }, [activeChat, auth.currentUser, messageLimit]);
 
   useEffect(() => {
+    if (isLoadMoreRef.current) {
+      isLoadMoreRef.current = false;
+      return;
+    }
     scrollRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
@@ -1285,7 +1495,7 @@ export default function Chat() {
   };
 
   const sendMessage = async () => {
-    if (!inputText.trim() && !selectedImageBase64) return;
+    if (!inputText.trim() && !selectedImageBase64 && !selectedAudioBase64) return;
     if (!auth.currentUser || !activeChat) return;
 
     const rawText = inputText;
@@ -1298,8 +1508,11 @@ export default function Chat() {
       senderAvatar: auth.currentUser.photoURL || `https://api.dicebear.com/7.x/initials/svg?seed=${auth.currentUser.email || 'cc'}`,
       text: encryptedText,
       imageUrl: selectedImageBase64 || null,
+      audioUrl: selectedAudioBase64 || null,
       isEncrypted: true,
       seen: false,
+      isOneTime: isOneTimeMode,
+      isOneTimeOpened: false,
       createdAt: serverTimestamp()
     };
 
@@ -1309,8 +1522,29 @@ export default function Chat() {
     // Persist to Firestore
     try {
       await addDoc(collection(db, 'chats', activeChat, 'messages'), messageData);
+      
+      const parts = activeChat.split('_');
+      const receiverId = parts.find(p => p !== auth.currentUser?.uid);
+      if (receiverId) {
+        addDoc(collection(db, 'feed_notifications'), {
+          receiverId: receiverId,
+          senderId: auth.currentUser.uid,
+          senderName: auth.currentUser.displayName || auth.currentUser.email?.split('@')[0] || 'Student',
+          senderAvatar: auth.currentUser.photoURL || `https://api.dicebear.com/7.x/initials/svg?seed=${auth.currentUser.email || 'cc'}`,
+          type: 'message',
+          postId: activeChat,
+          postContent: isOneTimeMode 
+            ? "Sent a disappearing one-time message" 
+            : (rawText || (selectedImageBase64 ? "Sent an image" : (selectedAudioBase64 ? "Sent a voice message" : "New message"))),
+          createdAt: serverTimestamp(),
+          seen: false
+        }).catch(err => console.error("Failed to create message notification document in Firestore:", err));
+      }
+
       setInputText('');
       setSelectedImageBase64(null);
+      setSelectedAudioBase64(null);
+      setIsOneTimeMode(false);
     } catch (error) {
       console.error("Failed to send message:", error);
     }
@@ -1380,6 +1614,173 @@ export default function Chat() {
       } catch (err) {
         console.error("Failed to start speech recognition:", err);
       }
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      if (recordingTimerIntervalRef.current) {
+        clearInterval(recordingTimerIntervalRef.current);
+      }
+      if (audioRecorderRef.current) {
+        try {
+          if (audioRecorderRef.current.state !== 'inactive') {
+            audioRecorderRef.current.onstop = null;
+            audioRecorderRef.current.stop();
+          }
+          const stream = audioRecorderRef.current.stream;
+          if (stream) {
+            stream.getTracks().forEach(track => track.stop());
+          }
+        } catch (_) {}
+      }
+    };
+  }, []);
+
+  const startAudioRecording = async () => {
+    try {
+      if (audioRecorderRef.current) {
+        cancelAudioRecording();
+      }
+
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error("Your browser does not support audio recording.");
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioChunksRef.current = [];
+
+      let mimeType = 'audio/webm';
+      if (typeof MediaRecorder !== 'undefined') {
+        if (!MediaRecorder.isTypeSupported(mimeType)) {
+          mimeType = 'audio/ogg';
+        }
+        if (!MediaRecorder.isTypeSupported(mimeType)) {
+          mimeType = 'audio/mp4';
+        }
+        if (!MediaRecorder.isTypeSupported(mimeType)) {
+          mimeType = '';
+        }
+      }
+
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          audioChunksRef.current.push(e.data);
+        }
+      };
+
+      recorder.onstop = () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: recorder.mimeType || 'audio/webm' });
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          setSelectedAudioBase64(reader.result as string);
+        };
+        reader.readAsDataURL(audioBlob);
+
+        stream.getTracks().forEach(track => track.stop());
+      };
+
+      audioRecorderRef.current = recorder;
+      recorder.start(100);
+
+      setIsRecordingAudio(true);
+      setRecordingTimer(0);
+
+      if (recordingTimerIntervalRef.current) {
+        clearInterval(recordingTimerIntervalRef.current);
+      }
+      recordingTimerIntervalRef.current = setInterval(() => {
+        setRecordingTimer(prev => prev + 1);
+      }, 1000);
+
+    } catch (error: any) {
+      console.error("Failed to start audio recording:", error);
+      alert("Microphone Access Error: " + (error.message || "Please check your browser microphone permission settings."));
+    }
+  };
+
+  const stopAudioRecording = () => {
+    if (audioRecorderRef.current && audioRecorderRef.current.state !== 'inactive') {
+      audioRecorderRef.current.stop();
+    }
+    setIsRecordingAudio(false);
+    if (recordingTimerIntervalRef.current) {
+      clearInterval(recordingTimerIntervalRef.current);
+      recordingTimerIntervalRef.current = null;
+    }
+  };
+
+  const cancelAudioRecording = () => {
+    if (audioRecorderRef.current) {
+      if (audioRecorderRef.current.state !== 'inactive') {
+        audioRecorderRef.current.onstop = null;
+        audioRecorderRef.current.stop();
+      }
+      const stream = audioRecorderRef.current.stream;
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+      }
+    }
+    setIsRecordingAudio(false);
+    setRecordingTimer(0);
+    audioChunksRef.current = [];
+    if (recordingTimerIntervalRef.current) {
+      clearInterval(recordingTimerIntervalRef.current);
+      recordingTimerIntervalRef.current = null;
+    }
+  };
+
+  // Close reaction selection popup when user clicks elsewhere
+  useEffect(() => {
+    const handleGlobalClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest('.reaction-trigger') && !target.closest('.reaction-popover')) {
+        setActiveReactionsMessageId(null);
+      }
+    };
+    window.addEventListener('click', handleGlobalClick);
+    return () => window.removeEventListener('click', handleGlobalClick);
+  }, []);
+
+  const handleReactToMessage = async (messageId: string, emoji: string) => {
+    if (!activeChat || !auth.currentUser) return;
+    const msgRef = doc(db, 'chats', activeChat, 'messages', messageId);
+    const msgDoc = messages.find(m => m.id === messageId);
+    if (!msgDoc) return;
+
+    const currentReactions = msgDoc.reactions || {};
+    const currentEmojiUsers = currentReactions[emoji] || [];
+    const uid = auth.currentUser.uid;
+
+    let updatedReactions = { ...currentReactions };
+
+    if (currentEmojiUsers.includes(uid)) {
+      // Toggle off: remove the individual user from this reaction
+      updatedReactions[emoji] = currentEmojiUsers.filter((id: string) => id !== uid);
+      if (updatedReactions[emoji].length === 0) {
+        delete updatedReactions[emoji];
+      }
+    } else {
+      // Toggle on: add the user's uid to this reaction
+      updatedReactions[emoji] = [...currentEmojiUsers, uid];
+      
+      // Keep it clean: user can have one active reaction on a message at a time; clean up other reactions
+      Object.keys(updatedReactions).forEach(otherEmoji => {
+        if (otherEmoji !== emoji) {
+          updatedReactions[otherEmoji] = (updatedReactions[otherEmoji] || []).filter((id: string) => id !== uid);
+          if (updatedReactions[otherEmoji].length === 0) {
+            delete updatedReactions[otherEmoji];
+          }
+        }
+      });
+    }
+
+    try {
+      await updateDoc(msgRef, { reactions: updatedReactions });
+    } catch (error) {
+      console.error("Failed to update reaction:", error);
     }
   };
 
@@ -1522,6 +1923,9 @@ export default function Chat() {
                     const isSelected = activeChat === dmId;
                     const unreadMissed = missedCalls.filter(call => call.callerId === student.uid);
                     const hasMissed = unreadMissed.length > 0;
+                    const studentUnseenCount = unseenMessageNotifications.filter(
+                      n => n.senderId === student.uid
+                    ).length;
                     return (
                       <button
                         key={student.uid}
@@ -1560,9 +1964,16 @@ export default function Chat() {
                               </motion.span>
                             )}
                           </div>
-                          <p className="text-[10px] text-slate-400 truncate italic-none">
-                            @{student.email?.split('@')[0]}
-                          </p>
+                          <div className="flex justify-between items-center mt-0.5">
+                            <p className="text-[10px] text-slate-400 truncate italic-none">
+                              @{student.email?.split('@')[0]}
+                            </p>
+                            {studentUnseenCount > 0 && (
+                              <span className="bg-blue-600 text-white font-black text-[9px] px-2 py-0.5 rounded-full shrink-0 shadow-sm animate-pulse leading-none">
+                                {studentUnseenCount} New
+                              </span>
+                            )}
+                          </div>
                         </div>
                       </button>
                     );
@@ -1995,74 +2406,178 @@ export default function Chat() {
               <p className="text-xs max-w-xs leading-relaxed">Send a friendly greeting to start the conversation! All student messages are secure.</p>
             </div>
           ) : (
-            messages.map((msg, i) => {
-              const isMe = msg.senderId === auth.currentUser?.uid;
-              return (
-                <motion.div
-                  key={msg.id || i}
-                  initial={{ opacity: 0, y: 10, scale: 0.95 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  className={`flex gap-3 ${isMe ? 'flex-row-reverse' : ''}`}
-                >
-                  {!isMe && (
-                    <img 
-                      src={msg.senderAvatar || `https://api.dicebear.com/7.x/initials/svg?seed=${msg.senderName}`} 
-                      onClick={() => navigate(`/profile/${msg.senderId}`)}
-                      className="w-8 h-8 rounded-full shadow-sm mt-auto object-cover border border-slate-200 cursor-pointer hover:ring-2 hover:ring-blue-100 transition-all bg-white" 
-                      alt="" 
-                      referrerPolicy="no-referrer"
-                    />
-                  )}
-                  <div className={`max-w-[70%] italic-none`}>
+            <>
+              {messages.length >= messageLimit && (
+                <div className="flex justify-center pb-4 w-full pt-1">
+                  <button
+                    onClick={() => {
+                      isLoadMoreRef.current = true;
+                      setMessageLimit(prev => prev + 35);
+                    }}
+                    className="px-4 py-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 rounded-full text-[10px] font-black uppercase tracking-wider transition-all shadow-xs flex items-center gap-1.5 cursor-pointer hover:shadow-sm"
+                  >
+                    <Loader2 size={11} className="text-slate-400 shrink-0 animate-spin" />
+                    Load older messages
+                  </button>
+                </div>
+              )}
+              {messages.map((msg, i) => {
+                const isMe = msg.senderId === auth.currentUser?.uid;
+                return (
+                  <motion.div
+                    key={msg.id || i}
+                    initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    className={`flex gap-3 ${isMe ? 'flex-row-reverse' : ''}`}
+                  >
                     {!isMe && (
-                      <span 
+                      <img 
+                        src={msg.senderAvatar || `https://api.dicebear.com/7.x/initials/svg?seed=${msg.senderName}`} 
                         onClick={() => navigate(`/profile/${msg.senderId}`)}
-                        className="text-[10px] font-bold text-slate-400 ml-2 mb-1 block italic-none cursor-pointer hover:text-blue-600 transition-colors"
-                      >
-                        {msg.senderName}
-                      </span>
+                        className="w-8 h-8 rounded-full shadow-sm mt-auto object-cover border border-slate-200 cursor-pointer hover:ring-2 hover:ring-blue-100 transition-all bg-white" 
+                        alt="" 
+                        referrerPolicy="no-referrer"
+                      />
                     )}
-                    <div className={`p-1.5 rounded-2xl text-sm italic-none ${
-                      isMe 
-                        ? 'bg-slate-900 text-white rounded-br-none' 
-                        : 'bg-white border border-slate-200 text-slate-800 rounded-bl-none shadow-sm'
-                    }`}>
-                      {/* Render custom Base64 uploaded photo if present in chat */}
-                      {msg.imageUrl && (
-                        <div className="rounded-xl overflow-hidden mb-1.5 max-w-sm max-h-60 border border-slate-100">
-                          <img 
-                            src={msg.imageUrl} 
-                            className="w-full h-full object-cover cursor-zoom-in" 
-                            alt="Attached file" 
-                            referrerPolicy="no-referrer"
-                            onClick={() => window.open(msg.imageUrl, '_blank')}
-                          />
+                    <div className={`max-w-[70%] italic-none relative group`}>
+                      {!isMe && (
+                        <span 
+                          onClick={() => navigate(`/profile/${msg.senderId}`)}
+                          className="text-[10px] font-bold text-slate-400 ml-2 mb-1 block italic-none cursor-pointer hover:text-blue-600 transition-colors"
+                        >
+                          {msg.senderName}
+                        </span>
+                      )}
+
+                      {/* Emoji reaction selection popover */}
+                      {activeReactionsMessageId === msg.id && (
+                        <div 
+                          className="reaction-popover absolute z-30 -top-11 bg-white dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700 p-1 rounded-full shadow-2xl flex items-center gap-1 animate-in fade-in zoom-in-95 duration-100"
+                          style={{ left: isMe ? 'auto' : '0px', right: isMe ? '0px' : 'auto' }}
+                        >
+                          {['👍', '❤️', '😂', '😮', '😢', '🙏'].map((emoji) => {
+                            const currentReactions = msg.reactions || {};
+                            const currentEmojiUsers = currentReactions[emoji] || [];
+                            const hasReacted = currentEmojiUsers.includes(auth.currentUser?.uid);
+                            return (
+                              <button
+                                key={emoji}
+                                onClick={() => {
+                                  handleReactToMessage(msg.id, emoji);
+                                  setActiveReactionsMessageId(null);
+                                }}
+                                className={`text-base p-1 hover:scale-125 active:scale-90 transition-transform cursor-pointer rounded-full hover:bg-slate-100 dark:hover:bg-slate-700 flex items-center justify-center w-7 h-7 shrink-0 ${
+                                  hasReacted ? "bg-blue-50/60 dark:bg-blue-900/40 font-semibold" : ""
+                                }`}
+                                title={emoji}
+                              >
+                                {emoji}
+                              </button>
+                            );
+                          })}
                         </div>
                       )}
-                      
-                      {msg.text && (
-                        <div className="px-3.5 py-2 leading-relaxed whitespace-pre-wrap flex items-start justify-between gap-1.5">
-                          <span>{msg.isEncrypted ? decryptText(msg.text, activeChat) : msg.text}</span>
-                          {msg.isEncrypted && (
-                            <Lock size={12} className="inline-block text-emerald-500 hover:text-emerald-400 shrink-0 mt-1" title="End-to-End Encrypted" />
+
+                      <div className={`flex items-center gap-2 ${isMe ? 'flex-row-reverse' : 'flex-row'}`}>
+                        {/* Reaction Picker Trigger Button */}
+                        <div className="opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-all duration-150 flex items-center shrink-0">
+                          <button
+                            onClick={() => setActiveReactionsMessageId(activeReactionsMessageId === msg.id ? null : msg.id)}
+                            className="reaction-trigger p-1.5 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-slate-800 rounded-full transition-colors cursor-pointer border border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xs flex items-center justify-center shrink-0"
+                            title="React to message"
+                          >
+                            <Smile size={14} />
+                          </button>
+                        </div>
+
+                        <div className={`p-1.5 rounded-2xl text-sm italic-none ${
+                          isMe 
+                            ? 'bg-slate-900 text-white rounded-br-none' 
+                            : 'bg-white border border-slate-200 text-slate-800 rounded-bl-none shadow-sm'
+                        }`}>
+                          {msg.isOneTime ? (
+                            <OneTimeMessage msg={msg} isMe={isMe} activeChat={activeChat} currentTime={currentTime} />
+                          ) : (
+                            <>
+                              {/* Render custom Base64 uploaded photo if present in chat */}
+                              {msg.imageUrl && (
+                                <div className="rounded-xl overflow-hidden mb-1.5 max-w-sm max-h-60 border border-slate-100">
+                                  <img 
+                                    src={msg.imageUrl} 
+                                    className="w-full h-full object-cover cursor-zoom-in" 
+                                    alt="Attached file" 
+                                    referrerPolicy="no-referrer"
+                                    onClick={() => window.open(msg.imageUrl, '_blank')}
+                                  />
+                                </div>
+                              )}
+
+                              {/* Render voice record message play bar if present in chat */}
+                              {msg.audioUrl && (
+                                <div className="p-1 rounded-xl mb-1 flex items-center pr-2">
+                                  <audio 
+                                    src={msg.audioUrl} 
+                                    controls 
+                                    className="w-56 max-w-full h-8 accent-blue-600 rounded-md" 
+                                  />
+                                </div>
+                              )}
+                              
+                              {msg.text && (
+                                <div className="px-3.5 py-2 leading-relaxed whitespace-pre-wrap flex items-start justify-between gap-1.5">
+                                  <span>{msg.isEncrypted ? decryptText(msg.text, activeChat) : msg.text}</span>
+                                  {msg.isEncrypted && (
+                                    <Lock size={12} className="inline-block text-emerald-500 hover:text-emerald-400 shrink-0 mt-1" title="End-to-End Encrypted" />
+                                  )}
+                                </div>
+                              )}
+                            </>
                           )}
                         </div>
+                      </div>
+
+                      {/* Render active reactions list row directly below the bubble */}
+                      {msg.reactions && Object.keys(msg.reactions).length > 0 && (
+                        <div className={`flex flex-wrap gap-1 mt-1 mb-1 ${isMe ? 'justify-end' : 'justify-start'}`}>
+                          {Object.entries(msg.reactions).map(([emoji, uids]: [string, any]) => {
+                            if (!uids || uids.length === 0) return null;
+                            const hasReacted = uids.includes(auth.currentUser?.uid);
+                            return (
+                              <button
+                                key={emoji}
+                                onClick={() => handleReactToMessage(msg.id, emoji)}
+                                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs transition-all border cursor-pointer ${
+                                  hasReacted
+                                    ? "bg-blue-50/80 dark:bg-blue-950/40 border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-300 font-semibold"
+                                    : "bg-slate-50 border-slate-100 dark:bg-slate-900/30 dark:border-slate-800 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/50"
+                                }`}
+                                title={`${uids.length} helper status: click to toggle`}
+                              >
+                                <span>{emoji}</span>
+                                {uids.length > 1 && (
+                                  <span className="text-[10px] font-bold opacity-80">{uids.length}</span>
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
                       )}
+
+                      <div className={`flex items-center gap-1 mt-1 text-[9px] text-slate-400 ${isMe ? 'justify-end' : ''}`}>
+                        {msg.createdAt && format(msg.createdAt, 'HH:mm')}
+                        {isMe && (
+                          msg.seen ? (
+                            <CheckCheck size={11} className="text-blue-600 stroke-[3px]" title="Seen" />
+                          ) : (
+                            <Check size={11} className="text-slate-400 stroke-[2px]" title="Sent" />
+                          )
+                        )}
+                      </div>
                     </div>
-                    <div className={`flex items-center gap-1 mt-1 text-[9px] text-slate-400 ${isMe ? 'justify-end' : ''}`}>
-                      {msg.createdAt && format(msg.createdAt, 'HH:mm')}
-                      {isMe && (
-                        msg.seen ? (
-                          <CheckCheck size={11} className="text-blue-600 stroke-[3px]" title="Seen" />
-                        ) : (
-                          <Check size={11} className="text-slate-400 stroke-[2px]" title="Sent" />
-                        )
-                      )}
-                    </div>
-                  </div>
-                </motion.div>
-              );
-            })
+                  </motion.div>
+                );
+              })}
+            </>
           )}
           {typing && typingUser && (
             <motion.div initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }} className="flex items-center gap-2 pl-3 py-1">
@@ -2082,81 +2597,191 @@ export default function Chat() {
         {/* Input Area */}
         {selectedReceiver && (
           <div className="p-4 border-t border-slate-100 italic-none">
-            {/* Base64 Input image preview */}
-            <AnimatePresence>
-              {selectedImageBase64 && (
-                <motion.div 
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: 10 }}
-                  className="mb-3 relative max-w-[120px] rounded-xl overflow-hidden shadow-md border border-slate-200/60 bg-white p-1"
-                >
-                  <img src={selectedImageBase64} className="w-full h-24 object-cover rounded-lg" alt="Thumbnail" />
-                  <button
-                    onClick={() => setSelectedImageBase64(null)}
-                    className="absolute top-2 right-2 p-1 bg-slate-950/80 hover:bg-slate-950 text-white rounded-full transition-all"
+            {/* Base64 Input attachment previews */}
+            <div className="flex flex-wrap items-center gap-3">
+              <AnimatePresence>
+                {selectedImageBase64 && (
+                  <motion.div 
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: 10 }}
+                    className="mb-3 relative max-w-[120px] rounded-xl overflow-hidden shadow-md border border-slate-200/60 bg-white p-1"
                   >
-                    <X size={10} />
-                  </button>
-                </motion.div>
-              )}
-            </AnimatePresence>
+                    <img src={selectedImageBase64} className="w-full h-24 object-cover rounded-lg" alt="Thumbnail" />
+                    <button
+                      onClick={() => setSelectedImageBase64(null)}
+                      className="absolute top-2 right-2 p-1 bg-slate-950/80 hover:bg-slate-950 text-white rounded-full transition-all"
+                    >
+                      <X size={10} />
+                    </button>
+                  </motion.div>
+                )}
+
+                {selectedAudioBase64 && (
+                  <motion.div 
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: 10 }}
+                    className="mb-3 relative max-w-[320px] rounded-2xl overflow-hidden shadow-md border border-slate-200/60 bg-white p-2.5 flex items-center gap-3"
+                  >
+                    <div className="p-2 bg-blue-50 text-blue-600 rounded-xl shrink-0 flex items-center justify-center">
+                      <Mic size={18} className="animate-pulse text-blue-600" />
+                    </div>
+                    <div className="flex-1 min-w-0 pr-1">
+                      <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Voice Record Preview</p>
+                      <audio 
+                        src={selectedAudioBase64} 
+                        controls 
+                        className="w-full h-7 mt-1 accent-blue-600" 
+                      />
+                    </div>
+                    <button
+                      onClick={() => setSelectedAudioBase64(null)}
+                      className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-500 hover:text-slate-805 rounded-full transition-all self-start ml-2"
+                      title="Discard Voice Message"
+                    >
+                      <X size={12} />
+                    </button>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
 
             <div className="flex items-center gap-2 bg-slate-50 p-2 rounded-2xl italic-none ring-1 ring-slate-200">
-              <input
-                type="file"
-                accept="image/*"
-                ref={chatFileInputRef}
-                onChange={handleImageSelect}
-                className="hidden"
-              />
-              <button 
-                type="button"
-                onClick={() => chatFileInputRef.current?.click()}
-                className="p-2.5 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-colors shrink-0"
-                title="Add Image Attachment"
-              >
-                <Image size={20} />
-              </button>
-              <input
-                type="text"
-                value={inputText}
-                onChange={(e) => {
-                  setInputText(e.target.value);
-                  handleTyping();
-                }}
-                onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
-                placeholder={`Message ${selectedReceiver.displayName}...`}
-                className="flex-1 bg-transparent border-none focus:ring-0 text-sm italic-none outline-none py-2"
-              />
-              <button
-                type="button"
-                onClick={toggleSpeechRecognition}
-                className={`p-2.5 rounded-xl transition-all relative cursor-pointer flex items-center justify-center shrink-0 ${
-                  isListening 
-                    ? "bg-red-50 text-red-600 ring-2 ring-red-500/20" 
-                    : "text-slate-500 hover:text-blue-600 hover:bg-blue-50"
-                }`}
-                title={isListening ? "Listening (Click to Stop)" : "Speech-to-Text Voice Dictation"}
-              >
-                {isListening ? (
-                  <>
-                    <span className="absolute inset-0 bg-red-500/15 rounded-xl animate-ping" />
-                    <Mic className="relative z-10 text-red-600 animate-pulse" size={20} />
-                  </>
-                ) : (
-                  <Mic size={20} />
-                )}
-              </button>
-              <button
-                onClick={sendMessage}
-                disabled={!inputText.trim() && !selectedImageBase64}
-                className={`p-2 rounded-xl italic-none transition-all ${
-                  inputText.trim() || selectedImageBase64 ? "bg-blue-600 text-white shadow-lg shadow-blue-100" : "text-slate-300"
-                }`}
-              >
-                <Send size={20} />
-              </button>
+              {isRecordingAudio ? (
+                /* LIVE AUDIO RECORDING PROGRESS CONTROLLERS */
+                <div className="w-full flex items-center justify-between px-1">
+                  <div className="flex items-center gap-3">
+                    <span className="relative flex h-3 w-3">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500"></span>
+                    </span>
+                    <span className="text-xs font-bold text-red-650 font-mono">
+                      Recording ({Math.floor(recordingTimer / 60)}:{(recordingTimer % 60).toString().padStart(2, '0')})
+                    </span>
+                    
+                    {/* Sound equalizer line animation simulation */}
+                    <div className="flex items-end gap-1.5 h-4 ml-1">
+                      <span className="w-1 bg-red-400 rounded-full animate-bounce h-2" style={{ animationDelay: '0.1s', animationDuration: '0.6s' }} />
+                      <span className="w-1 bg-red-400 rounded-full animate-bounce h-3.5" style={{ animationDelay: '0.2s', animationDuration: '0.4s' }} />
+                      <span className="w-1 bg-red-400 rounded-full animate-bounce h-1.5" style={{ animationDelay: '0.15s', animationDuration: '0.5s' }} />
+                      <span className="w-1 bg-red-400 rounded-full animate-bounce h-3" style={{ animationDelay: '0.35s', animationDuration: '0.7s' }} />
+                      <span className="w-1 bg-red-400 rounded-full animate-bounce h-2" style={{ animationDelay: '0.25s', animationDuration: '0.5s' }} />
+                    </div>
+                  </div>
+                  
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={cancelAudioRecording}
+                      className="px-3 py-1.5 text-xs font-bold text-slate-500 hover:text-red-600 hover:bg-red-50 rounded-xl transition-all flex items-center gap-1 shrink-0 cursor-pointer"
+                      title="Discard Recording"
+                    >
+                      <Trash2 size={14} /> <span>Cancel</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={stopAudioRecording}
+                      className="px-3.5 py-1.5 text-xs font-black bg-blue-600 hover:bg-blue-700 text-white rounded-xl transition-all flex items-center gap-1 shrink-0 cursor-pointer shadow-sm shadow-blue-100"
+                      title="Stop and Save Recording"
+                    >
+                      <Check size={14} className="stroke-[3px]" /> <span>Done</span>
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                /* STANDARD TEXT MESSAGING INTERACE WITH ADDED MICROPHONE RECORDER */
+                <>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    ref={chatFileInputRef}
+                    onChange={handleImageSelect}
+                    className="hidden"
+                  />
+                  <button 
+                    type="button"
+                    onClick={() => chatFileInputRef.current?.click()}
+                    className="p-2.5 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-colors shrink-0"
+                    title="Add Image Attachment"
+                  >
+                    <Image size={20} />
+                  </button>
+                  <button 
+                    type="button"
+                    onClick={() => setIsOneTimeMode(prev => !prev)}
+                    className={`p-2.5 rounded-xl transition-all relative cursor-pointer flex items-center justify-center shrink-0 ${
+                      isOneTimeMode 
+                        ? "bg-pink-50 text-pink-600 ring-2 ring-pink-500/20 animate-pulse" 
+                        : "text-slate-500 hover:text-blue-600 hover:bg-blue-50"
+                    }`}
+                    title={isOneTimeMode ? "One-Time Message Mode Enabled (Disappears once read)" : "Send as One-Time View-Once Message"}
+                  >
+                    {isOneTimeMode ? (
+                      <>
+                        <span className="absolute inset-0 bg-pink-500/15 rounded-xl animate-ping" />
+                        <EyeOff className="relative z-10 text-pink-600" size={20} />
+                      </>
+                    ) : (
+                      <Eye size={20} />
+                    )}
+                  </button>
+                  <input
+                    type="text"
+                    value={inputText}
+                    onChange={(e) => {
+                      setInputText(e.target.value);
+                      handleTyping();
+                    }}
+                    onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
+                    placeholder={`Message ${selectedReceiver.displayName}...`}
+                    className="flex-1 bg-transparent border-none focus:ring-0 text-sm italic-none outline-none py-2"
+                  />
+                  
+                  {/* Web Speech Dictation */}
+                  <button
+                    type="button"
+                    onClick={toggleSpeechRecognition}
+                    className={`p-2.5 rounded-xl transition-all relative cursor-pointer flex items-center justify-center shrink-0 ${
+                      isListening 
+                        ? "bg-red-50 text-red-600 ring-2 ring-red-500/20" 
+                        : "text-slate-500 hover:text-blue-600 hover:bg-blue-50"
+                    }`}
+                    title={isListening ? "Listening (Click to Stop)" : "Speech-to-Text Voice Dictation"}
+                  >
+                    {isListening ? (
+                      <>
+                        <span className="absolute inset-0 bg-red-500/15 rounded-xl animate-ping" />
+                        <Mic className="relative z-10 text-red-600 animate-pulse" size={20} />
+                      </>
+                    ) : (
+                      <Mic size={20} />
+                    )}
+                  </button>
+
+                  {/* Micro-access Voice Message Recording Activation */}
+                  <button
+                    type="button"
+                    onClick={startAudioRecording}
+                    className="p-2.5 text-slate-500 hover:text-red-500 hover:bg-red-50 rounded-xl transition-all shrink-0 relative cursor-pointer"
+                    title="Record and send voice message clip"
+                  >
+                    <span className="absolute top-2 right-2 w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse" />
+                    <Mic size={18} className="text-blue-600 shrink-0" style={{ transform: 'scale(1.1)' }} />
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={sendMessage}
+                    disabled={!inputText.trim() && !selectedImageBase64 && !selectedAudioBase64}
+                    className={`p-2 rounded-xl italic-none transition-all ${
+                      inputText.trim() || selectedImageBase64 || selectedAudioBase64 ? "bg-blue-600 text-white shadow-lg shadow-blue-100" : "text-slate-300"
+                    }`}
+                  >
+                    <Send size={20} />
+                  </button>
+                </>
+              )}
             </div>
           </div>
         )}
@@ -2180,6 +2805,8 @@ export default function Chat() {
         toggleScreenShare={toggleScreenShare}
         isRecipientOffline={isRecipientOffline}
         ping={ping}
+        packetLoss={packetsLost}
+        jitter={jitter}
         remoteStreams={
           Object.keys(remoteStreams).length > 0 
             ? remoteStreams 

@@ -8,24 +8,25 @@ service cloud.firestore {
 
     match /users/{userId} {
       allow read: if request.auth != null;
-      allow create: if request.auth != null && request.auth.uid == userId && 
-        request.resource.data.email == request.auth.token.email && (
-          request.auth.token.email == 'nnanwubagabriel@gmail.com' || (
-            (!('verified' in request.resource.data) || request.resource.data.verified == false) &&
-            (!('blocked' in request.resource.data) || request.resource.data.blocked == false) &&
-            (!('isAdmin' in request.resource.data) || request.resource.data.isAdmin == false)
-          )
-        );
+      allow create: if request.auth != null && request.auth.uid == userId && (
+        request.auth.token.email == 'nnanwubagabriel@gmail.com' || 
+        request.auth.uid == 'ym7WaLWcbGR4yjhcf46Dl5y4Vsz2' || (
+          (!('verified' in request.resource.data) || request.resource.data.verified == false) &&
+          (!('blocked' in request.resource.data) || request.resource.data.blocked == false) &&
+          (!('isAdmin' in request.resource.data) || request.resource.data.isAdmin == false)
+        )
+      );
       allow update: if request.auth != null && (
         request.auth.token.email == 'nnanwubagabriel@gmail.com' ||
-        (request.auth.uid == userId && (
-          request.auth.token.email == 'nnanwubagabriel@gmail.com' || (
-            (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['verified', 'blocked', 'isAdmin']) ||
-             ('verified' in resource.data && request.resource.data.verified == resource.data.verified))
-          )
-        ))
+        request.auth.uid == 'ym7WaLWcbGR4yjhcf46Dl5y4Vsz2' ||
+        (request.auth.uid == userId && 
+         !request.resource.data.diff(resource.data).affectedKeys().hasAny(['verified', 'blocked', 'isAdmin'])
+        )
       );
-      allow delete: if request.auth != null && request.auth.token.email == 'nnanwubagabriel@gmail.com';
+      allow delete: if request.auth != null && (
+        request.auth.token.email == 'nnanwubagabriel@gmail.com' ||
+        request.auth.uid == 'ym7WaLWcbGR4yjhcf46Dl5y4Vsz2'
+      );
     }
     
     match /posts/{postId} {
@@ -48,11 +49,20 @@ service cloud.firestore {
     match /marketplace/{itemId} {
       allow read: if request.auth != null;
       allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
-      allow update, delete: if request.auth != null && (request.auth.uid == resource.data.userId || request.auth.token.email == 'nnanwubagabriel@gmail.com');
+      allow update: if request.auth != null && (
+        resource.data.userId == request.auth.uid || 
+        request.auth.token.email == 'nnanwubagabriel@gmail.com' ||
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['views'])
+      );
+      allow delete: if request.auth != null && (resource.data.userId == request.auth.uid || request.auth.token.email == 'nnanwubagabriel@gmail.com');
+    }
+    
+    match /chats/{chatId} {
+      allow read, write: if request.auth != null && (chatId == 'global-room' || chatId.matches('^' + request.auth.uid + '_.*') || chatId.matches('.*_' + request.auth.uid + '$'));
     }
     
     match /chats/{chatId}/messages/{messageId} {
-      allow read, write: if request.auth != null && (chatId == 'global-room' || chatId.matches('.*' + request.auth.uid + '.*'));
+      allow read, write: if request.auth != null && (chatId == 'global-room' || chatId.matches('^' + request.auth.uid + '_.*') || chatId.matches('.*_' + request.auth.uid + '$'));
     }
     
     match /friendRequests/{requestId} {
